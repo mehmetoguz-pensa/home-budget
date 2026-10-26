@@ -26,10 +26,13 @@ Run the API persistence tests with `npm test`.
 
 - Track one-time or monthly recurring income and expenses, with custom names and categories.
 - See monthly income, expenses, debt payments, and a rolling six-month cash-flow forecast.
-- Track loan and credit-card balances, APR, due day, and monthly payment.
+- Manage bank accounts, bank loans, and credit cards in separate left-menu sections.
+- Track positive or negative bank-account balances, plus loan and credit-card balances, APR, and monthly payment.
+- Schedule each bank loan's monthly repayment from its first payment date for a chosen number of payments.
+- Enter monetary values with live dot-separated thousands and comma decimals (for example, `1.234,56`).
 - Choose a display currency and remove budget items or accounts.
 
-The forecast repeats monthly entries from their start dates and includes each account's monthly payment in every forecast month. A one-time item is included only in the month it is dated. The six-month net is the cumulative difference between forecast income and expenses; it does not assume a starting bank balance. APR is informational and is not used to estimate interest or payoff dates.
+The forecast repeats monthly entries from their start dates; a bank loan creates a linked recurring expense that ends after its selected payment count. Credit-card payments are included in each forecast month. A one-time item is included only in the month it is dated. The six-month net is the cumulative difference between forecast income and expenses; it does not assume a starting bank balance. Bank account balances are tracked separately and do not count as debt or change that forecast. APR is informational and is not used to estimate interest or payoff dates.
 
 ## SQLite data and privacy
 

@@ -44,6 +44,7 @@ function validateBudget(value) {
   }
 
   const entryIds = new Set()
+  const linkedEntries = []
   for (const entry of value.entries) {
     if (!isRecord(entry)
       || !isNonEmptyString(entry.id, 100)
@@ -56,10 +57,13 @@ function validateBudget(value) {
       || !Number.isFinite(entry.amount)
       || entry.amount <= 0
       || !isValidDate(entry.date)
-      || typeof entry.recurring !== 'boolean') {
+      || typeof entry.recurring !== 'boolean'
+      || ('recurrenceCount' in entry && (!Number.isInteger(entry.recurrenceCount) || entry.recurrenceCount < 1))
+      || ('linkedAccountId' in entry && !isNonEmptyString(entry.linkedAccountId, 100))) {
       return 'Budget contains an invalid income or expense item.'
     }
     entryIds.add(entry.id)
+    if ('linkedAccountId' in entry) linkedEntries.push(entry)
   }
 
   const accountIds = new Set()
@@ -68,10 +72,10 @@ function validateBudget(value) {
       || !isNonEmptyString(account.id, 100)
       || accountIds.has(account.id)
       || !isNonEmptyString(account.name, 80)
-      || !['Loan', 'Credit card'].includes(account.kind)
+      || !['Loan', 'Credit card', 'Bank account'].includes(account.kind)
       || typeof account.balance !== 'number'
       || !Number.isFinite(account.balance)
-      || account.balance < 0
+      || (account.kind !== 'Bank account' && account.balance < 0)
       || typeof account.apr !== 'number'
       || !Number.isFinite(account.apr)
       || account.apr < 0
@@ -81,10 +85,24 @@ function validateBudget(value) {
       || account.payment < 0
       || !Number.isInteger(account.dueDay)
       || account.dueDay < 1
-      || account.dueDay > 31) {
+      || account.dueDay > 31
+      || ('periodCount' in account && (!Number.isInteger(account.periodCount) || account.periodCount < 0))
+      || (account.kind !== 'Loan' && account.periodCount > 0)) {
       return 'Budget contains an invalid loan or credit card.'
     }
     accountIds.add(account.id)
+  }
+
+  for (const entry of linkedEntries) {
+    const account = value.accounts.find((candidate) => candidate.id === entry.linkedAccountId)
+    if (!account
+      || account.kind !== 'Loan'
+      || entry.kind !== 'expense'
+      || !entry.recurring
+      || !entry.recurrenceCount
+      || (account.periodCount ?? 0) !== entry.recurrenceCount) {
+      return 'Budget contains an invalid loan repayment item.'
+    }
   }
 
   return null
@@ -106,30 +124,70 @@ function initializeDatabase(databasePath) {
       category TEXT NOT NULL,
       amount REAL NOT NULL CHECK (amount > 0),
       date TEXT NOT NULL,
-      recurring INTEGER NOT NULL CHECK (recurring IN (0, 1))
+      recurring INTEGER NOT NULL CHECK (recurring IN (0, 1)),
+      recurrence_count INTEGER CHECK (recurrence_count IS NULL OR recurrence_count > 0),
+      linked_account_id TEXT
     );
     CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
-      kind TEXT NOT NULL CHECK (kind IN ('Loan', 'Credit card')),
-      balance REAL NOT NULL CHECK (balance >= 0),
+      kind TEXT NOT NULL CHECK (kind IN ('Loan', 'Credit card', 'Bank account')),
+      balance REAL NOT NULL CHECK (kind = 'Bank account' OR balance >= 0),
       apr REAL NOT NULL CHECK (apr BETWEEN 0 AND 100),
       payment REAL NOT NULL CHECK (payment >= 0),
-      due_day INTEGER NOT NULL CHECK (due_day BETWEEN 1 AND 31)
+      due_day INTEGER NOT NULL CHECK (due_day BETWEEN 1 AND 31),
+      period_count INTEGER NOT NULL DEFAULT 0 CHECK (period_count >= 0)
     );
     INSERT INTO settings (key, value)
       VALUES ('currency', 'USD')
       ON CONFLICT (key) DO NOTHING;
   `)
+  migrateEntries(database)
+  migrateAccounts(database)
   return database
+}
+
+function migrateEntries(database) {
+  const columns = new Set(database.prepare('PRAGMA table_info(entries)').all().map((column) => column.name))
+  if (!columns.has('recurrence_count')) {
+    database.exec('ALTER TABLE entries ADD COLUMN recurrence_count INTEGER CHECK (recurrence_count IS NULL OR recurrence_count > 0)')
+  }
+  if (!columns.has('linked_account_id')) {
+    database.exec('ALTER TABLE entries ADD COLUMN linked_account_id TEXT')
+  }
+}
+
+function migrateAccounts(database) {
+  const table = database.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'accounts'").get()
+  const columns = new Set(database.prepare('PRAGMA table_info(accounts)').all().map((column) => column.name))
+  if (table.sql.includes("'Bank account'") && columns.has('period_count')) return
+
+  database.exec(`
+    BEGIN IMMEDIATE;
+    CREATE TABLE accounts_new (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('Loan', 'Credit card', 'Bank account')),
+      balance REAL NOT NULL CHECK (kind = 'Bank account' OR balance >= 0),
+      apr REAL NOT NULL CHECK (apr BETWEEN 0 AND 100),
+      payment REAL NOT NULL CHECK (payment >= 0),
+      due_day INTEGER NOT NULL CHECK (due_day BETWEEN 1 AND 31),
+      period_count INTEGER NOT NULL DEFAULT 0 CHECK (period_count >= 0)
+    );
+    INSERT INTO accounts_new (id, name, kind, balance, apr, payment, due_day, period_count)
+      SELECT id, name, kind, balance, apr, payment, due_day, ${columns.has('period_count') ? 'period_count' : '0'} FROM accounts;
+    DROP TABLE accounts;
+    ALTER TABLE accounts_new RENAME TO accounts;
+    COMMIT;
+  `)
 }
 
 function readBudget(database) {
   const currency = database.prepare("SELECT value FROM settings WHERE key = 'currency'").get()
   const entries = database.prepare(`
-    SELECT id, title, kind, category, amount, date, recurring
+    SELECT id, title, kind, category, amount, date, recurring, recurrence_count, linked_account_id
     FROM entries
-    ORDER BY rowid DESC
+    ORDER BY rowid ASC
   `).all().map((entry) => ({
     id: entry.id,
     title: entry.title,
@@ -138,11 +196,13 @@ function readBudget(database) {
     amount: entry.amount,
     date: entry.date,
     recurring: entry.recurring === 1,
+    ...(entry.recurrence_count === null ? {} : { recurrenceCount: entry.recurrence_count }),
+    ...(entry.linked_account_id === null ? {} : { linkedAccountId: entry.linked_account_id }),
   }))
   const accounts = database.prepare(`
-    SELECT id, name, kind, balance, apr, payment, due_day
+    SELECT id, name, kind, balance, apr, payment, due_day, period_count
     FROM accounts
-    ORDER BY rowid DESC
+    ORDER BY rowid ASC
   `).all().map((account) => ({
     id: account.id,
     name: account.name,
@@ -151,6 +211,7 @@ function readBudget(database) {
     apr: account.apr,
     payment: account.payment,
     dueDay: account.due_day,
+    periodCount: account.period_count,
   }))
   return { currency: currency.value, entries, accounts }
 }
@@ -162,19 +223,38 @@ function replaceBudget(database, budget) {
     database.exec('DELETE FROM entries; DELETE FROM accounts;')
 
     const insertEntry = database.prepare(`
-      INSERT INTO entries (id, title, kind, category, amount, date, recurring)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO entries (id, title, kind, category, amount, date, recurring, recurrence_count, linked_account_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const entry of budget.entries) {
-      insertEntry.run(entry.id, entry.title.trim(), entry.kind, entry.category.trim(), entry.amount, entry.date, entry.recurring ? 1 : 0)
+      insertEntry.run(
+        entry.id,
+        entry.title.trim(),
+        entry.kind,
+        entry.category.trim(),
+        entry.amount,
+        entry.date,
+        entry.recurring ? 1 : 0,
+        entry.recurrenceCount ?? null,
+        entry.linkedAccountId ?? null,
+      )
     }
 
     const insertAccount = database.prepare(`
-      INSERT INTO accounts (id, name, kind, balance, apr, payment, due_day)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO accounts (id, name, kind, balance, apr, payment, due_day, period_count)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const account of budget.accounts) {
-      insertAccount.run(account.id, account.name.trim(), account.kind, account.balance, account.apr, account.payment, account.dueDay)
+      insertAccount.run(
+        account.id,
+        account.name.trim(),
+        account.kind,
+        account.balance,
+        account.kind === 'Bank account' ? 0 : account.apr,
+        account.kind === 'Bank account' ? 0 : account.payment,
+        account.kind === 'Bank account' ? 1 : account.dueDay,
+        account.kind === 'Loan' ? account.periodCount ?? 0 : 0,
+      )
     }
 
     database.exec('COMMIT')

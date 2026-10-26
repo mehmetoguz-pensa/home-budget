@@ -137,6 +137,7 @@ h1 { margin-bottom: 4px; font-size: 28px; font-weight: 700; letter-spacing: -.9p
 .account-row { min-height: 72px; display: flex; align-items: center; gap: 13px; border-bottom: 1px solid #eff0f1; }
 .account-symbol { display: grid; place-items: center; flex: 0 0 auto; width: 35px; height: 35px; border-radius: 9px; color: #9183c4; background: #f4f1fb; }
 .card-symbol { color: #588c70; background: #edf6f0; }
+.bank-symbol { color: #bd766d; background: #fcf0ee; }
 .account-name { min-width: 100px; flex: 1; }.account-name strong, .account-balance strong, .account-payment strong { display: block; color: #4c515a; font-size: 11px; font-weight: 600; }.account-name span, .account-balance span, .account-payment span { display: block; margin-top: 4px; color: #9a9fa6; font-size: 9px; }
 .account-payment, .account-balance { min-width: 95px; text-align: right; }.account-payment strong, .account-balance strong { font-size: 10px; }
 .storage-alert { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; padding: 10px 12px; border: 1px solid #f0d6c4; border-radius: 6px; color: #875836; background: #fff8f1; font-size: 11px; }
