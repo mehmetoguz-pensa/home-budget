@@ -1,0 +1,31 @@
+:root {
+  font-family: 'Avenir Next', Avenir, 'Segoe UI', sans-serif;
+  color: #292d38;
+  background: #f7f8fa;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-optical-sizing: auto;
+  font-weight: 400;
+
+  --ink: #292d38;
+  --muted: #89909d;
+  --line: #e9ebef;
+  --green: #32866c;
+  --green-dark: #26755c;
+  --green-soft: #eaf5ef;
+  --red: #d77870;
+  --red-soft: #fcf0ee;
+  --purple: #9187d4;
+}
+
+* { box-sizing: border-box; }
+
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button, input, select { font: inherit; }
+button { cursor: pointer; }
+button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 3px solid #b6d8ca; outline-offset: 2px; }
+::selection { background: #d9eee4; }
+
+#root { min-height: 100vh; }
