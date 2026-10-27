@@ -3,7 +3,7 @@ import './App.css'
 
 type EntryKind = 'income' | 'expense'
 type AccountKind = 'Loan' | 'Credit card' | 'Bank account'
-type Page = 'Overview' | 'Transactions' | 'Recurring' | 'Accounts' | 'Loans' | 'Credit cards'
+type Page = 'Overview' | 'Transactions' | 'Recurring' | 'Salaries' | 'Accounts' | 'Loans' | 'Credit cards'
 
 type Entry = {
   id: string
@@ -15,6 +15,9 @@ type Entry = {
   recurring: boolean
   recurrenceCount?: number
   linkedAccountId?: string
+  currency?: string
+  sourceAmount?: number
+  exchangeRate?: number
 }
 
 type Account = {
@@ -49,6 +52,9 @@ function isEntry(value: unknown): value is Entry {
     && 'recurring' in value && typeof value.recurring === 'boolean'
     && (!('recurrenceCount' in value) || (typeof value.recurrenceCount === 'number' && Number.isInteger(value.recurrenceCount) && value.recurrenceCount > 0))
     && (!('linkedAccountId' in value) || typeof value.linkedAccountId === 'string')
+    && (!('currency' in value) || (typeof value.currency === 'string' && CURRENCIES.some((currency) => currency === value.currency)))
+    && (!('sourceAmount' in value) || (typeof value.sourceAmount === 'number' && Number.isFinite(value.sourceAmount) && value.sourceAmount > 0))
+    && (!('exchangeRate' in value) || (typeof value.exchangeRate === 'number' && Number.isFinite(value.exchangeRate) && value.exchangeRate > 0))
 }
 
 function isAccount(value: unknown): value is Account {
@@ -84,6 +90,7 @@ const NAV_ITEMS: { label: Page; icon: string }[] = [
   { label: 'Overview', icon: 'grid' },
   { label: 'Transactions', icon: 'list' },
   { label: 'Recurring', icon: 'repeat' },
+  { label: 'Salaries', icon: 'wallet' },
   { label: 'Accounts', icon: 'wallet' },
   { label: 'Loans', icon: 'wallet' },
   { label: 'Credit cards', icon: 'card' },
@@ -179,7 +186,11 @@ function makeForecast(data: BudgetData, today: Date): ForecastMonth[] {
     }
 
     for (const account of data.accounts) {
-      if (account.kind !== 'Bank account' && account.periodCount === 0) expenses += account.payment
+      if (account.kind === 'Credit card') {
+        const dueDay = Math.min(account.dueDay, new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate())
+        if (monthKey(date) !== monthKey(today) || dueDay >= today.getDate()) expenses += account.balance
+      }
+      else if (account.kind === 'Loan' && account.periodCount === 0) expenses += account.payment
     }
     const net = income - expenses
     runningNet += net
@@ -341,10 +352,11 @@ function App() {
   const saveQueue = useRef<Promise<void>>(Promise.resolve())
   const saveSequence = useRef(0)
   const [page, setPage] = useState<Page>('Overview')
-  const [modal, setModal] = useState<'entry' | 'account' | null>(null)
+  const [modal, setModal] = useState<'entry' | 'account' | 'salary' | null>(null)
   const [entryKind, setEntryKind] = useState<EntryKind>('expense')
   const [entryFrequency, setEntryFrequency] = useState('once')
   const [accountKind, setAccountKind] = useState<AccountKind>('Loan')
+  const [salaryCurrency, setSalaryCurrency] = useState<string>('USD')
 
   useEffect(() => {
     const controller = new AbortController()
@@ -415,6 +427,8 @@ function App() {
   const upcomingEntries = [...budget.entries].sort((a, b) => b.date.localeCompare(a.date))
   const visibleEntries = page === 'Recurring'
     ? upcomingEntries.filter((entry) => entry.recurring)
+    : page === 'Salaries'
+      ? upcomingEntries.filter((entry) => entry.category === 'Salary' && entry.kind === 'income')
     : page === 'Overview'
       ? upcomingEntries.filter((entry) => monthKey(dateFromInput(entry.date)) === currentMonth).slice(0, 5)
       : upcomingEntries
@@ -445,6 +459,29 @@ function App() {
     setModal(null)
   }
 
+  function addSalary(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const fields = new FormData(event.currentTarget)
+    const sourceAmount = Number(fields.get('amount'))
+    const exchangeRate = salaryCurrency === budget.currency ? 1 : Number(fields.get('exchangeRate'))
+    const convertedAmount = Math.round((sourceAmount * exchangeRate + Number.EPSILON) * 100) / 100
+    const salary: Entry = {
+      id: crypto.randomUUID(),
+      title: String(fields.get('title')).trim(),
+      kind: 'income',
+      category: 'Salary',
+      amount: convertedAmount,
+      sourceAmount,
+      currency: salaryCurrency,
+      exchangeRate,
+      date: String(fields.get('date')),
+      recurring: true,
+    }
+    if (!salary.title || !Number.isFinite(sourceAmount) || sourceAmount <= 0 || !Number.isFinite(exchangeRate) || exchangeRate <= 0 || !Number.isFinite(convertedAmount) || convertedAmount <= 0 || !salary.date) return
+    saveBudget({ ...budget, entries: [salary, ...budget.entries] })
+    setModal(null)
+  }
+
   function addAccount(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const fields = new FormData(event.currentTarget)
@@ -463,6 +500,10 @@ function App() {
     }
     if (!account.name || !Number.isFinite(account.balance) || (account.kind !== 'Bank account' && account.balance < 0)) return
     if (account.kind === 'Loan' && (!Number.isFinite(account.payment) || account.payment <= 0 || !Number.isInteger(periodCount) || periodCount < 1 || !loanFirstPaymentDate)) return
+    if (account.kind === 'Credit card') {
+      account.apr = 0
+      account.payment = 0
+    }
     const loanEntry: Entry | null = account.kind === 'Loan' ? {
       id: crypto.randomUUID(),
       title: `${account.name} payment`,
@@ -523,6 +564,11 @@ function App() {
     setModal('account')
   }
 
+  function openSalary() {
+    setSalaryCurrency(budget.currency)
+    setModal('salary')
+  }
+
   const sectionTitle = page === 'Overview' ? 'Your money, in focus.' : page
   const sectionDescription = page === 'Overview'
     ? 'A clearer picture of where you are and where you’re headed.'
@@ -530,6 +576,8 @@ function App() {
       ? 'Every income and expense, all in one place.'
       : page === 'Recurring'
         ? 'Monthly items included in your future outlook.'
+        : page === 'Salaries'
+          ? 'Manage recurring salary income and its currency.'
         : page === 'Accounts'
           ? 'Track cash in your bank accounts, including overdrafts.'
           : page === 'Loans'
@@ -622,11 +670,13 @@ function App() {
 
           {page === 'Recurring' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">REPEATS EACH MONTH</span><h2>Recurring items</h2><p>These are included in every future month from their start date.</p></div><button className="button button-primary button-small" onClick={() => openEntry('expense', true)}><Icon name="plus" size={15} /> Add recurring</button></div><EntryTable entries={visibleEntries} currency={budget.currency} onDelete={removeEntry} /></section>}
 
+          {page === 'Salaries' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">RECURRING INCOME</span><h2>Your salaries</h2><p>{visibleEntries.length} {visibleEntries.length === 1 ? 'salary' : 'salaries'} · Added to income every month from the start date.</p></div><button className="button button-primary button-small" onClick={openSalary}><Icon name="plus" size={15} /> Add salary</button></div>{visibleEntries.length === 0 ? <EmptyState title="No salaries added yet" description="Add a salary with its monthly amount, currency, and start date." action={<button className="button button-outline" onClick={openSalary}><Icon name="plus" size={15} /> Add salary</button>} /> : <EntryTable entries={visibleEntries} currency={budget.currency} onDelete={removeEntry} />}</section>}
+
           {page === 'Accounts' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">BANK ACCOUNTS</span><h2>Your accounts</h2><p>{bankAccounts.length} {bankAccounts.length === 1 ? 'bank account' : 'bank accounts'} · Positive and negative balances are supported.</p></div><button className="button button-primary button-small" onClick={() => openAccount('Bank account')}><Icon name="plus" size={15} /> Add bank account</button></div>{bankAccounts.length === 0 ? <EmptyState title="No bank accounts added yet" description="Add a bank account and enter its current balance. Negative balances are supported for overdrafts." action={<button className="button button-outline" onClick={() => openAccount('Bank account')}><Icon name="plus" size={15} /> Add bank account</button>} /> : <AccountList accounts={bankAccounts} currency={budget.currency} onDelete={removeAccount} />}</section>}
 
           {page === 'Loans' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">BANK LOAN BALANCES</span><h2>Your bank loans</h2><p>{loans.length} {loans.length === 1 ? 'bank loan' : 'bank loans'} · Scheduled monthly payments stop after the selected period.</p></div><button className="button button-primary button-small" onClick={() => openAccount('Loan')}><Icon name="plus" size={15} /> Add bank loan</button></div>{loans.length === 0 ? <EmptyState title="No bank loans added yet" description="Add a bank loan with a monthly payment, first payment date, and number of payments." action={<button className="button button-outline" onClick={() => openAccount('Loan')}><Icon name="plus" size={15} /> Add bank loan</button>} /> : <AccountList accounts={loans} currency={budget.currency} onDelete={removeAccount} />}</section>}
 
-          {page === 'Credit cards' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">CARD BALANCES</span><h2>Your credit cards</h2><p>{creditCards.length} {creditCards.length === 1 ? 'card' : 'cards'} · Monthly payments appear in your forecast.</p></div><button className="button button-primary button-small" onClick={() => openAccount('Credit card')}><Icon name="plus" size={15} /> Add credit card</button></div>{creditCards.length === 0 ? <EmptyState title="No credit cards added yet" description="Add a credit card to track its current balance, APR, and monthly payment." action={<button className="button button-outline" onClick={() => openAccount('Credit card')}><Icon name="plus" size={15} /> Add a credit card</button>} /> : <AccountList accounts={creditCards} currency={budget.currency} onDelete={removeAccount} />}</section>}
+          {page === 'Credit cards' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">CARD BALANCES</span><h2>Your credit cards</h2><p>{creditCards.length} {creditCards.length === 1 ? 'card' : 'cards'} · Current debt is projected as a full monthly payment.</p></div><button className="button button-primary button-small" onClick={() => openAccount('Credit card')}><Icon name="plus" size={15} /> Add credit card</button></div>{creditCards.length === 0 ? <EmptyState title="No credit cards added yet" description="Add a credit card to track its current debt and monthly payment date." action={<button className="button button-outline" onClick={() => openAccount('Credit card')}><Icon name="plus" size={15} /> Add a credit card</button>} /> : <AccountList accounts={creditCards} currency={budget.currency} onDelete={removeAccount} />}</section>}
 
           <footer className="page-footer"><span>Made for the everyday moments that add up.</span><span className={saveStatus === 'saving' ? 'save-pending' : saveStatus === 'error' ? 'save-failed' : ''}><i /> {saveStatus === 'saving' ? 'Saving to SQLite…' : saveStatus === 'error' ? 'Save failed' : 'Saved to local SQLite'}</span></footer>
         </div>
@@ -644,18 +694,31 @@ function App() {
         </form>
       </Modal>}
 
+      {modal === 'salary' && <Modal title="Add salary" onClose={() => setModal(null)}>
+        <form className="form-stack" onSubmit={addSalary}>
+          <label className="form-field"><span>Salary name</span><input name="title" placeholder="e.g. Monthly salary" autoFocus required maxLength={80} /></label>
+          <div className="form-row">
+            <label className="form-field"><span>Amount</span><div className="amount-input"><span>{new Intl.NumberFormat(undefined, { style: 'currency', currency: salaryCurrency }).formatToParts(0).find((part) => part.type === 'currency')?.value}</span><AmountInput name="amount" label="Salary amount" required /></div></label>
+            <label className="form-field"><span>Currency</span><select name="currency" value={salaryCurrency} onChange={(event) => setSalaryCurrency(event.target.value)}>{CURRENCIES.map((currency) => <option key={currency} value={currency}>{currency}</option>)}</select></label>
+          </div>
+          {salaryCurrency !== budget.currency && <label className="form-field"><span>Exchange rate to {budget.currency}</span><input name="exchangeRate" type="number" min="0.000001" step="any" defaultValue="1" required /><small>Value of 1 {salaryCurrency} in {budget.currency}.</small></label>}
+          <label className="form-field"><span>First payment date</span><input name="date" type="date" defaultValue={toDateInput(today)} required /></label>
+          <div className="modal-note"><Icon name="repeat" size={16} /><span>This salary repeats monthly. The exchange rate converts its amount to {budget.currency} for forecasts.</span></div>
+          <div className="modal-actions"><button type="button" className="button button-plain" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="button button-primary">Add salary</button></div>
+        </form>
+      </Modal>}
+
       {modal === 'account' && <Modal title={`Add ${accountKind === 'Bank account' ? 'bank account' : accountKind === 'Loan' ? 'bank loan' : 'credit card'}`} onClose={() => setModal(null)}>
         <form className="form-stack" onSubmit={addAccount}>
           <input type="hidden" name="kind" value={accountKind} />
           <label className="form-field"><span>{accountKind === 'Bank account' ? 'Bank account name' : accountKind === 'Loan' ? 'Bank loan name' : 'Credit card name'}</span><input name="name" placeholder={accountKind === 'Bank account' ? 'e.g. Everyday checking' : accountKind === 'Loan' ? 'e.g. Car loan' : 'e.g. Travel card'} autoFocus required maxLength={80} /></label>
-          <label className="form-field"><span>Current balance</span><AmountInput name="balance" label="Current balance" allowNegative={accountKind === 'Bank account'} placeholder={accountKind === 'Bank account' ? 'e.g. -1.250,00' : '0,00'} required /></label>
-          {accountKind !== 'Bank account' && <>
+          <label className="form-field"><span>{accountKind === 'Credit card' ? 'Current debt' : 'Current balance'}</span><AmountInput name="balance" label={accountKind === 'Credit card' ? 'Current debt' : 'Current balance'} allowNegative={accountKind === 'Bank account'} placeholder={accountKind === 'Bank account' ? 'e.g. -1.250,00' : '0,00'} required /></label>
+          {accountKind === 'Loan' && <>
             <div className="form-row"><label className="form-field"><span>Monthly payment</span><AmountInput name="payment" label="Monthly payment" defaultValue="0" placeholder="0,00" required={accountKind === 'Loan'} /></label><label className="form-field"><span>Interest rate (APR %)</span><input name="apr" type="number" min="0" max="100" step="0.01" placeholder="0" defaultValue="0" /></label></div>
-            {accountKind === 'Loan'
-              ? <div className="form-row"><label className="form-field"><span>First payment date</span><input name="firstPaymentDate" type="date" defaultValue={toDateInput(today)} required /></label><label className="form-field"><span>Number of payments</span><input name="periodCount" type="number" min="1" step="1" placeholder="e.g. 60" required /></label></div>
-              : <label className="form-field"><span>Payment due day</span><input name="dueDay" type="number" min="1" max="31" defaultValue="1" /></label>}
+            <div className="form-row"><label className="form-field"><span>First payment date</span><input name="firstPaymentDate" type="date" defaultValue={toDateInput(today)} required /></label><label className="form-field"><span>Number of payments</span><input name="periodCount" type="number" min="1" step="1" placeholder="e.g. 60" required /></label></div>
           </>}
-          <div className="modal-note"><Icon name="calendar" size={16} /><span>{accountKind === 'Bank account' ? 'Enter a negative balance to show an overdraft. Bank balances do not count as debt payments in the forecast.' : accountKind === 'Loan' ? 'A recurring expense will be created for the selected number of monthly payments and will stop automatically. Interest is for reference only.' : 'The monthly payment is counted as an expense in your forecast. Interest is for reference only.'}</span></div>
+          {accountKind === 'Credit card' && <label className="form-field"><span>Payment date (day of month)</span><input name="dueDay" type="number" min="1" max="31" defaultValue="1" required /></label>}
+          <div className="modal-note"><Icon name="calendar" size={16} /><span>{accountKind === 'Bank account' ? 'Enter a negative balance to show an overdraft. Bank balances do not count as debt payments in the forecast.' : accountKind === 'Loan' ? 'A recurring expense will be created for the selected number of monthly payments and will stop automatically. Interest is for reference only.' : 'The current debt is assumed paid in full on its payment date and each following month in your forecast.'}</span></div>
           <div className="modal-actions"><button type="button" className="button button-plain" onClick={() => setModal(null)}>Cancel</button><button type="submit" className="button button-primary">Add {accountKind === 'Bank account' ? 'bank account' : accountKind === 'Loan' ? 'bank loan' : 'credit card'}</button></div>
         </form>
       </Modal>}
@@ -666,15 +729,16 @@ function App() {
 function EntryTable({ entries, currency, onDelete }: { entries: Entry[]; currency: string; onDelete: (id: string) => void }) {
   if (entries.length === 0) return <EmptyState title="Nothing to show yet" description="Add an income or expense to start building your household budget." action={null} />
 
-  return <div className="table-scroll"><table className="entry-table"><thead><tr><th>DESCRIPTION</th><th>CATEGORY</th><th>DATE</th><th>FREQUENCY</th><th className="amount-column">AMOUNT</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{entries.map((entry) => <tr key={entry.id}><td><span className={`entry-symbol ${entry.kind}`}><Icon name={entry.kind === 'income' ? 'arrow' : 'down'} size={16} /></span><span className="entry-title"><strong>{entry.title}</strong><small>{entry.kind === 'income' ? 'Income' : 'Expense'}</small></span></td><td><span className="category-label">{entry.category || 'Other'}</span></td><td>{new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(dateFromInput(entry.date))}</td><td>{entry.recurring ? <span className="frequency"><Icon name="repeat" size={13} /> {entry.recurrenceCount ? `Monthly · ${entry.recurrenceCount} payments` : 'Monthly'}</span> : <span className="frequency-once">One time</span>}</td><td className={`amount-column ${entry.kind === 'income' ? 'positive' : 'negative'}`}>{entry.kind === 'income' ? '+' : '−'}{formatMoney(entry.amount, currency)}</td><td><button className="icon-button delete-button" aria-label={`Delete ${entry.title}`} onClick={() => onDelete(entry.id)}><Icon name="trash" size={15} /></button></td></tr>)}</tbody></table></div>
+  return <div className="table-scroll"><table className="entry-table"><thead><tr><th>DESCRIPTION</th><th>CATEGORY</th><th>DATE</th><th>FREQUENCY</th><th className="amount-column">AMOUNT</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{entries.map((entry) => <tr key={entry.id}><td><span className={`entry-symbol ${entry.kind}`}><Icon name={entry.kind === 'income' ? 'arrow' : 'down'} size={16} /></span><span className="entry-title"><strong>{entry.title}</strong><small>{entry.kind === 'income' ? 'Income' : 'Expense'}</small></span></td><td><span className="category-label">{entry.category || 'Other'}</span></td><td>{new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(dateFromInput(entry.date))}</td><td>{entry.recurring ? <span className="frequency"><Icon name="repeat" size={13} /> {entry.recurrenceCount ? `Monthly · ${entry.recurrenceCount} payments` : 'Monthly'}</span> : <span className="frequency-once">One time</span>}</td><td className={`amount-column ${entry.kind === 'income' ? 'positive' : 'negative'}`}>{entry.kind === 'income' ? '+' : '−'}{formatMoney(entry.sourceAmount ?? entry.amount, entry.currency ?? currency)}</td><td><button className="icon-button delete-button" aria-label={`Delete ${entry.title}`} onClick={() => onDelete(entry.id)}><Icon name="trash" size={15} /></button></td></tr>)}</tbody></table></div>
 }
 
 function AccountList({ accounts, currency, onDelete }: { accounts: Account[]; currency: string; onDelete: (id: string) => void }) {
   return <div className="account-list">{accounts.map((account) => <article className="account-row" key={account.id}>
     <span className={`account-symbol ${account.kind === 'Loan' ? 'loan-symbol' : account.kind === 'Bank account' ? 'bank-symbol' : 'card-symbol'}`}><Icon name={account.kind === 'Credit card' ? 'card' : 'wallet'} size={19} /></span>
-    <div className="account-name"><strong>{account.name}</strong><span>{account.kind === 'Loan' ? `Bank loan · ${account.apr}% APR · ${account.periodCount ? `${account.periodCount} payments` : 'Ongoing payments'}` : account.kind !== 'Bank account' ? `${account.kind} · ${account.apr}% APR` : account.kind}</span></div>
-    {account.kind !== 'Bank account' && <div className="account-payment"><span>Monthly payment</span><strong>{formatMoney(account.payment, currency)}</strong></div>}
-    <div className="account-balance"><span>{account.balance < 0 ? 'Overdrawn' : 'Balance'}</span><strong className={account.balance < 0 ? 'negative' : ''}>{formatMoney(account.balance, currency)}</strong></div>
+    <div className="account-name"><strong>{account.name}</strong><span>{account.kind === 'Loan' ? `Bank loan · ${account.apr}% APR · ${account.periodCount ? `${account.periodCount} payments` : 'Ongoing payments'}` : account.kind === 'Credit card' ? 'Credit card' : account.kind}</span></div>
+    {account.kind === 'Loan' && <div className="account-payment"><span>Monthly payment</span><strong>{formatMoney(account.payment, currency)}</strong></div>}
+    {account.kind === 'Credit card' && <div className="account-payment"><span>Payment date</span><strong>Day {account.dueDay}</strong></div>}
+    <div className="account-balance"><span>{account.kind === 'Credit card' ? 'Current debt' : account.balance < 0 ? 'Overdrawn' : 'Balance'}</span><strong className={account.balance < 0 ? 'negative' : ''}>{formatMoney(account.balance, currency)}</strong></div>
     <button className="icon-button delete-button" aria-label={`Remove ${account.name}`} onClick={() => onDelete(account.id)}><Icon name="trash" size={16} /></button>
   </article>)}</div>
 }

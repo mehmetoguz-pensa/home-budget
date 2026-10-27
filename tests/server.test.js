@@ -43,7 +43,7 @@ test('budget data is stored in SQLite, validated, and available after a server r
   const budget = {
     currency: 'EUR',
     entries: [{
-      id: 'salary-id',
+      id: 'monthly-income-id',
       title: 'Monthly salary',
       kind: 'income',
       category: 'Work',
@@ -60,6 +60,17 @@ test('budget data is stored in SQLite, validated, and available after a server r
       recurring: true,
       recurrenceCount: 3,
       linkedAccountId: 'loan-id',
+    }, {
+      id: 'foreign-salary-id',
+      title: 'Foreign currency salary',
+      kind: 'income',
+      category: 'Salary',
+      amount: 3500,
+      sourceAmount: 2500,
+      currency: 'EUR',
+      exchangeRate: 1.4,
+      date: '2026-10-01',
+      recurring: true,
     }],
     accounts: [{
       id: 'loan-id',
@@ -78,6 +89,15 @@ test('budget data is stored in SQLite, validated, and available after a server r
       apr: 0,
       payment: 0,
       dueDay: 1,
+      periodCount: 0,
+    }, {
+      id: 'card-id',
+      name: 'Travel card',
+      kind: 'Credit card',
+      balance: 1600,
+      apr: 0,
+      payment: 0,
+      dueDay: 24,
       periodCount: 0,
     }],
   }

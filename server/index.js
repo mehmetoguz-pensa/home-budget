@@ -59,8 +59,25 @@ function validateBudget(value) {
       || !isValidDate(entry.date)
       || typeof entry.recurring !== 'boolean'
       || ('recurrenceCount' in entry && (!Number.isInteger(entry.recurrenceCount) || entry.recurrenceCount < 1))
-      || ('linkedAccountId' in entry && !isNonEmptyString(entry.linkedAccountId, 100))) {
+      || ('linkedAccountId' in entry && !isNonEmptyString(entry.linkedAccountId, 100))
+      || ('currency' in entry && !currencies.has(entry.currency))
+      || ('sourceAmount' in entry && (typeof entry.sourceAmount !== 'number' || !Number.isFinite(entry.sourceAmount) || entry.sourceAmount <= 0))
+      || ('exchangeRate' in entry && (typeof entry.exchangeRate !== 'number' || !Number.isFinite(entry.exchangeRate) || entry.exchangeRate <= 0))) {
       return 'Budget contains an invalid income or expense item.'
+    }
+    const hasSalaryMetadata = 'currency' in entry || 'sourceAmount' in entry || 'exchangeRate' in entry
+    if (hasSalaryMetadata && (
+      !('currency' in entry)
+      || !('sourceAmount' in entry)
+      || !('exchangeRate' in entry)
+      || entry.kind !== 'income'
+      || !entry.recurring
+      || entry.category !== 'Salary'
+      || 'recurrenceCount' in entry
+      || 'linkedAccountId' in entry
+      || Math.abs(entry.amount - Math.round((entry.sourceAmount * entry.exchangeRate + Number.EPSILON) * 100) / 100) > 0.001
+    )) {
+      return 'Budget contains invalid recurring salary details.'
     }
     entryIds.add(entry.id)
     if ('linkedAccountId' in entry) linkedEntries.push(entry)
@@ -126,7 +143,10 @@ function initializeDatabase(databasePath) {
       date TEXT NOT NULL,
       recurring INTEGER NOT NULL CHECK (recurring IN (0, 1)),
       recurrence_count INTEGER CHECK (recurrence_count IS NULL OR recurrence_count > 0),
-      linked_account_id TEXT
+      linked_account_id TEXT,
+      source_currency TEXT,
+      source_amount REAL CHECK (source_amount IS NULL OR source_amount > 0),
+      exchange_rate REAL CHECK (exchange_rate IS NULL OR exchange_rate > 0)
     );
     CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
@@ -154,6 +174,15 @@ function migrateEntries(database) {
   }
   if (!columns.has('linked_account_id')) {
     database.exec('ALTER TABLE entries ADD COLUMN linked_account_id TEXT')
+  }
+  if (!columns.has('source_currency')) {
+    database.exec('ALTER TABLE entries ADD COLUMN source_currency TEXT')
+  }
+  if (!columns.has('source_amount')) {
+    database.exec('ALTER TABLE entries ADD COLUMN source_amount REAL CHECK (source_amount IS NULL OR source_amount > 0)')
+  }
+  if (!columns.has('exchange_rate')) {
+    database.exec('ALTER TABLE entries ADD COLUMN exchange_rate REAL CHECK (exchange_rate IS NULL OR exchange_rate > 0)')
   }
 }
 
@@ -185,7 +214,8 @@ function migrateAccounts(database) {
 function readBudget(database) {
   const currency = database.prepare("SELECT value FROM settings WHERE key = 'currency'").get()
   const entries = database.prepare(`
-    SELECT id, title, kind, category, amount, date, recurring, recurrence_count, linked_account_id
+    SELECT id, title, kind, category, amount, date, recurring, recurrence_count, linked_account_id,
+      source_currency, source_amount, exchange_rate
     FROM entries
     ORDER BY rowid ASC
   `).all().map((entry) => ({
@@ -198,6 +228,11 @@ function readBudget(database) {
     recurring: entry.recurring === 1,
     ...(entry.recurrence_count === null ? {} : { recurrenceCount: entry.recurrence_count }),
     ...(entry.linked_account_id === null ? {} : { linkedAccountId: entry.linked_account_id }),
+    ...(entry.source_currency === null ? {} : {
+      currency: entry.source_currency,
+      sourceAmount: entry.source_amount,
+      exchangeRate: entry.exchange_rate,
+    }),
   }))
   const accounts = database.prepare(`
     SELECT id, name, kind, balance, apr, payment, due_day, period_count
@@ -223,8 +258,10 @@ function replaceBudget(database, budget) {
     database.exec('DELETE FROM entries; DELETE FROM accounts;')
 
     const insertEntry = database.prepare(`
-      INSERT INTO entries (id, title, kind, category, amount, date, recurring, recurrence_count, linked_account_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO entries (
+        id, title, kind, category, amount, date, recurring, recurrence_count, linked_account_id,
+        source_currency, source_amount, exchange_rate
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const entry of budget.entries) {
       insertEntry.run(
@@ -237,6 +274,9 @@ function replaceBudget(database, budget) {
         entry.recurring ? 1 : 0,
         entry.recurrenceCount ?? null,
         entry.linkedAccountId ?? null,
+        entry.currency ?? null,
+        entry.sourceAmount ?? null,
+        entry.exchangeRate ?? null,
       )
     }
 
