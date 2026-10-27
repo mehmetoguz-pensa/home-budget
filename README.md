@@ -25,15 +25,17 @@ Run the API persistence tests with `npm test`.
 ## What it does
 
 - Track one-time or monthly recurring income and expenses, with custom names and categories.
-- Manage salaries in a dedicated section; salaries repeat monthly and support a currency with a manual exchange rate for forecasts.
+- Manage salaries in a dedicated section; salaries repeat monthly and use a live exchange rate for forecasts.
+- Track one-time and monthly family expenses in a dedicated section, with a chosen month count for recurring items.
 - See monthly income, expenses, debt payments, and a rolling six-month cash-flow forecast.
+- Use Future Perspective for 12 monthly income/expense graphs, accumulated balance trends, and a month-by-month breakdown.
 - Manage bank accounts, bank loans, and credit cards in separate left-menu sections.
 - Track positive or negative bank-account balances, bank-loan terms, and credit-card debt with a monthly payment date.
 - Schedule each bank loan's monthly repayment from its first payment date for a chosen number of payments.
 - Enter monetary values with live dot-separated thousands and comma decimals (for example, `1.234,56`).
 - Choose a display currency and remove budget items or accounts.
 
-The forecast repeats monthly entries from their start dates; a salary is recurring income converted to the budget currency using the manually entered rate. A bank loan creates a linked recurring expense that ends after its selected payment count. A credit card's current debt is assumed paid in full on its monthly payment date and each following month. A one-time item is included only in the month it is dated. The six-month net is the cumulative difference between forecast income and expenses; it does not assume a starting bank balance. Bank account balances are tracked separately and do not count as debt or change that forecast. Loan APR is informational and is not used to estimate interest or payoff dates.
+The forecast repeats monthly entries from their start dates; a salary is recurring income converted to the budget currency using a rate fetched from the free Frankfurter API when the salary is added. That rate and its effective date are saved with the salary so forecasts remain consistent; adding a salary sends the currency pair but not its amount to Frankfurter. A bank loan creates a linked recurring expense that ends after its selected payment count. A credit card's current debt is assumed paid in full on its monthly payment date and each following month. A one-time item is included only in the month it is dated. Future Perspective shows the next 12 months and calculates accumulated balance from today's combined bank-account balance, applying only cash flows dated today or later in the current month and all forecast cash flows in later months. The six-month net on the overview remains cumulative income minus expenses. Loan APR is informational and is not used to estimate interest or payoff dates.
 
 ## SQLite data and privacy
 

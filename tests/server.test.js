@@ -69,6 +69,7 @@ test('budget data is stored in SQLite, validated, and available after a server r
       sourceAmount: 2500,
       currency: 'EUR',
       exchangeRate: 1.4,
+      exchangeRateDate: '2026-10-27',
       date: '2026-10-01',
       recurring: true,
     }],
@@ -172,6 +173,48 @@ test('existing SQLite databases migrate loan balances and preserve existing budg
     await new Promise((resolve, reject) => {
       server.once('error', reject)
       server.listen(0, '127.0.0.1', resolve)
+    })
+
+    test('exchange-rate API validates supported currencies and returns remote rates', async () => {
+      const rateDirectory = await mkdtemp(join(tmpdir(), 'home-budget-rates-'))
+      const databasePath = join(rateDirectory, 'budget.sqlite')
+      const requestedPairs = []
+      const server = createBudgetServer({
+        databasePath,
+        staticDirectory: null,
+        exchangeRateFetcher: async (base, quote) => {
+          requestedPairs.push([base, quote])
+          return { date: '2026-10-27', base, quote, rate: 1.12 }
+        },
+      })
+
+      try {
+        await new Promise((resolve, reject) => {
+          server.once('error', reject)
+          server.listen(0, '127.0.0.1', resolve)
+        })
+        const baseUrl = `http://127.0.0.1:${server.address().port}`
+        const response = await fetch(`${baseUrl}/api/exchange-rate?base=EUR&quote=USD`)
+        assert.equal(response.status, 200)
+        assert.deepEqual(await response.json(), {
+          date: '2026-10-27',
+          base: 'EUR',
+          quote: 'USD',
+          rate: 1.12,
+        })
+        assert.deepEqual(requestedPairs, [['EUR', 'USD']])
+
+        const sameCurrencyResponse = await fetch(`${baseUrl}/api/exchange-rate?base=USD&quote=USD`)
+        assert.equal(sameCurrencyResponse.status, 200)
+        assert.equal((await sameCurrencyResponse.json()).rate, 1)
+
+        const invalidCurrencyResponse = await fetch(`${baseUrl}/api/exchange-rate?base=EUR&quote=XYZ`)
+        assert.equal(invalidCurrencyResponse.status, 400)
+        assert.deepEqual(requestedPairs, [['EUR', 'USD']])
+      } finally {
+        await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()))
+        await rm(rateDirectory, { recursive: true, force: true })
+      }
     })
     const baseUrl = `http://127.0.0.1:${server.address().port}`
     const loadedBudget = await (await fetch(`${baseUrl}/api/budget`)).json()

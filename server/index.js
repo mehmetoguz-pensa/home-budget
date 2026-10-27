@@ -62,7 +62,8 @@ function validateBudget(value) {
       || ('linkedAccountId' in entry && !isNonEmptyString(entry.linkedAccountId, 100))
       || ('currency' in entry && !currencies.has(entry.currency))
       || ('sourceAmount' in entry && (typeof entry.sourceAmount !== 'number' || !Number.isFinite(entry.sourceAmount) || entry.sourceAmount <= 0))
-      || ('exchangeRate' in entry && (typeof entry.exchangeRate !== 'number' || !Number.isFinite(entry.exchangeRate) || entry.exchangeRate <= 0))) {
+      || ('exchangeRate' in entry && (typeof entry.exchangeRate !== 'number' || !Number.isFinite(entry.exchangeRate) || entry.exchangeRate <= 0))
+      || ('exchangeRateDate' in entry && !isValidDate(entry.exchangeRateDate))) {
       return 'Budget contains an invalid income or expense item.'
     }
     const hasSalaryMetadata = 'currency' in entry || 'sourceAmount' in entry || 'exchangeRate' in entry
@@ -70,6 +71,7 @@ function validateBudget(value) {
       !('currency' in entry)
       || !('sourceAmount' in entry)
       || !('exchangeRate' in entry)
+      || ('exchangeRateDate' in entry && !isValidDate(entry.exchangeRateDate))
       || entry.kind !== 'income'
       || !entry.recurring
       || entry.category !== 'Salary'
@@ -146,7 +148,8 @@ function initializeDatabase(databasePath) {
       linked_account_id TEXT,
       source_currency TEXT,
       source_amount REAL CHECK (source_amount IS NULL OR source_amount > 0),
-      exchange_rate REAL CHECK (exchange_rate IS NULL OR exchange_rate > 0)
+      exchange_rate REAL CHECK (exchange_rate IS NULL OR exchange_rate > 0),
+      exchange_rate_date TEXT
     );
     CREATE TABLE IF NOT EXISTS accounts (
       id TEXT PRIMARY KEY,
@@ -184,6 +187,9 @@ function migrateEntries(database) {
   if (!columns.has('exchange_rate')) {
     database.exec('ALTER TABLE entries ADD COLUMN exchange_rate REAL CHECK (exchange_rate IS NULL OR exchange_rate > 0)')
   }
+  if (!columns.has('exchange_rate_date')) {
+    database.exec('ALTER TABLE entries ADD COLUMN exchange_rate_date TEXT')
+  }
 }
 
 function migrateAccounts(database) {
@@ -215,7 +221,7 @@ function readBudget(database) {
   const currency = database.prepare("SELECT value FROM settings WHERE key = 'currency'").get()
   const entries = database.prepare(`
     SELECT id, title, kind, category, amount, date, recurring, recurrence_count, linked_account_id,
-      source_currency, source_amount, exchange_rate
+      source_currency, source_amount, exchange_rate, exchange_rate_date
     FROM entries
     ORDER BY rowid ASC
   `).all().map((entry) => ({
@@ -232,6 +238,7 @@ function readBudget(database) {
       currency: entry.source_currency,
       sourceAmount: entry.source_amount,
       exchangeRate: entry.exchange_rate,
+      ...(entry.exchange_rate_date === null ? {} : { exchangeRateDate: entry.exchange_rate_date }),
     }),
   }))
   const accounts = database.prepare(`
@@ -260,8 +267,8 @@ function replaceBudget(database, budget) {
     const insertEntry = database.prepare(`
       INSERT INTO entries (
         id, title, kind, category, amount, date, recurring, recurrence_count, linked_account_id,
-        source_currency, source_amount, exchange_rate
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        source_currency, source_amount, exchange_rate, exchange_rate_date
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     for (const entry of budget.entries) {
       insertEntry.run(
@@ -277,6 +284,7 @@ function replaceBudget(database, budget) {
         entry.currency ?? null,
         entry.sourceAmount ?? null,
         entry.exchangeRate ?? null,
+        entry.exchangeRateDate ?? null,
       )
     }
 
@@ -307,6 +315,16 @@ function replaceBudget(database, budget) {
 function sendJson(response, statusCode, value, headers = {}) {
   response.writeHead(statusCode, { 'content-type': 'application/json; charset=utf-8', ...headers })
   response.end(JSON.stringify(value))
+}
+
+async function fetchFrankfurterRate(base, quote) {
+  const response = await fetch(`https://api.frankfurter.dev/v2/rate/${base}/${quote}`, {
+    signal: AbortSignal.timeout(10000),
+  })
+  if (!response.ok) {
+    throw new Error(`Frankfurter returned HTTP ${response.status}.`)
+  }
+  return response.json()
 }
 
 async function readJson(request) {
@@ -381,20 +399,21 @@ export function createBudgetServer({
   staticDirectory = process.env.NODE_ENV === 'production' || process.argv.includes('--production')
     ? resolve('dist')
     : null,
+  exchangeRateFetcher = fetchFrankfurterRate,
 } = {}) {
   const absoluteDatabasePath = resolve(databasePath)
   mkdirSyncForDatabase(absoluteDatabasePath)
   const database = initializeDatabase(absoluteDatabasePath)
 
   const server = createHttpServer((request, response) => {
-    void handleRequest(request, response, database, staticDirectory)
+    void handleRequest(request, response, database, staticDirectory, exchangeRateFetcher)
   })
 
   server.on('close', () => database.close())
   return server
 }
 
-async function handleRequest(request, response, database, staticDirectory) {
+async function handleRequest(request, response, database, staticDirectory, exchangeRateFetcher) {
   try {
     const pathname = new URL(request.url, 'http://localhost').pathname
     if (!pathname.startsWith('/api/')) {
@@ -404,6 +423,39 @@ async function handleRequest(request, response, database, staticDirectory) {
 
     if (pathname === '/api/health' && request.method === 'GET') {
       sendJson(response, 200, { status: 'ok' })
+      return
+    }
+    if (pathname === '/api/exchange-rate') {
+      if (request.method !== 'GET') {
+        sendJson(response, 405, { error: 'Method not allowed.' }, { allow: 'GET' })
+        return
+      }
+      const parameters = new URL(request.url, 'http://localhost').searchParams
+      const base = parameters.get('base')
+      const quote = parameters.get('quote')
+      if (!currencies.has(base) || !currencies.has(quote)) {
+        sendJson(response, 400, { error: 'Use supported base and quote currencies.' })
+        return
+      }
+      try {
+        const result = base === quote
+          ? { date: new Date().toISOString().slice(0, 10), base, quote, rate: 1 }
+          : await exchangeRateFetcher(base, quote)
+        if (!result
+          || result.base !== base
+          || result.quote !== quote
+          || !isValidDate(result.date)
+          || typeof result.rate !== 'number'
+          || !Number.isFinite(result.rate)
+          || result.rate <= 0) {
+          throw new Error('The exchange-rate service returned invalid data.')
+        }
+        sendJson(response, 200, result, { 'cache-control': 'public, max-age=3600' })
+      } catch (error) {
+        console.error('Failed to retrieve currency exchange rate:', error)
+        const detail = error instanceof Error ? error.message : String(error)
+        sendJson(response, 502, { error: `Could not retrieve the exchange rate: ${detail}` })
+      }
       return
     }
     if (pathname !== '/api/budget') {
