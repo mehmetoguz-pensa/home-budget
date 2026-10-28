@@ -995,7 +995,7 @@ function App() {
     <div className="app-shell">
       <aside className="sidebar">
         <a className="brand" href="#" onClick={(event) => { event.preventDefault(); setPage('Overview') }}>
-          <span className="brand-mark"><span /></span><span>nest<span className="brand-light">egg</span></span>
+          <span className="brand-mark"><span /></span><span>Trendology</span>
         </a>
         <div className="sidebar-caption">WORKSPACE</div>
         <nav className="main-nav" aria-label="Main navigation">
@@ -1024,8 +1024,7 @@ function App() {
           {NAV_ITEMS.slice(6).map(renderNavItem)}
         </nav>
         <div className="sidebar-bottom">
-          <div className="privacy-note"><span className="privacy-lock">◈</span><div><strong>Private by design</strong><p>Saved in your local SQLite database.</p></div></div>
-          <div className="profile"><span className="avatar">H</span><span><strong>Home budget</strong><small>Personal workspace</small></span><span className="profile-dots">•••</span></div>
+          <div className="profile"><span className="avatar">T</span><span><strong>Trendology</strong><small>Personal workspace</small></span><span className="profile-dots">•••</span></div>
         </div>
       </aside>
 

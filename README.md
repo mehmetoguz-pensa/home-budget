@@ -1,4 +1,4 @@
-# Nestegg — Home budget
+# Trendology — Home budget
 
 A local-first household budget planner for tracking income, expenses, recurring monthly items, loans, and credit cards. No account or login is needed.
 
