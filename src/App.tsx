@@ -3,7 +3,7 @@ import './App.css'
 
 type EntryKind = 'income' | 'expense'
 type AccountKind = 'Loan' | 'Credit card' | 'Bank account'
-type Page = 'Overview' | 'Future Perspective' | 'Transactions' | 'Recurring' | 'Salaries' | 'Family' | 'Accounts' | 'Loans' | 'Credit cards'
+type Page = 'Overview' | 'Future Perspective' | 'Monthly Overview' | 'Transactions' | 'Recurring' | 'Salaries' | 'Family' | 'House' | 'Personal' | 'Car' | 'Accounts' | 'Loans' | 'Credit cards'
 
 type Entry = {
   id: string
@@ -86,19 +86,36 @@ type ForecastMonth = {
   net: number
   runningNet: number
   projectedBalance: number
+  incomeItems: ForecastItem[]
+  expenseItems: ForecastItem[]
+}
+
+type ForecastItem = {
+  id: string
+  title: string
+  category: string
+  amount: number
+  date: Date
 }
 
 const CURRENCIES = ['USD', 'EUR', 'GBP', 'TRY', 'CAD', 'AUD'] as const
+const MONTHLY_NET_INTEREST_RATE = 0.04
 const NAV_ITEMS: { label: Page; icon: string }[] = [
   { label: 'Overview', icon: 'grid' },
   { label: 'Future Perspective', icon: 'trend' },
+  { label: 'Monthly Overview', icon: 'calendar' },
   { label: 'Transactions', icon: 'list' },
   { label: 'Recurring', icon: 'repeat' },
   { label: 'Salaries', icon: 'wallet' },
-  { label: 'Family', icon: 'family' },
   { label: 'Accounts', icon: 'wallet' },
   { label: 'Loans', icon: 'wallet' },
   { label: 'Credit cards', icon: 'card' },
+]
+const SPENDING_ITEMS: { label: Extract<Page, 'House' | 'Family' | 'Personal' | 'Car'>; icon: string }[] = [
+  { label: 'House', icon: 'house' },
+  { label: 'Family', icon: 'family' },
+  { label: 'Personal', icon: 'person' },
+  { label: 'Car', icon: 'car' },
 ]
 
 function emptyBudget(): BudgetData {
@@ -198,10 +215,10 @@ function formatMonth(date: Date, options: Intl.DateTimeFormatOptions = { month: 
 function makeForecast(data: BudgetData, today: Date, monthCount = 6): ForecastMonth[] {
   const current = monthStart(today)
   let runningNet = 0
-  const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate())
   let projectedBalance = data.accounts
     .filter((account) => account.kind === 'Bank account')
-    .reduce((balance, account) => balance + account.balance, 0)
+    .reduce((total, account) => total + account.balance, 0)
+  const todayDate = new Date(today.getFullYear(), today.getMonth(), today.getDate())
 
   return Array.from({ length: monthCount }, (_, index) => {
     const date = new Date(current.getFullYear(), current.getMonth() + index, 1)
@@ -210,6 +227,8 @@ function makeForecast(data: BudgetData, today: Date, monthCount = 6): ForecastMo
     let expenses = 0
     let remainingIncome = 0
     let remainingExpenses = 0
+    const incomeItems: ForecastItem[] = []
+    const expenseItems: ForecastItem[] = []
 
     for (const entry of data.entries) {
       const entryDate = dateFromInput(entry.date)
@@ -222,33 +241,86 @@ function makeForecast(data: BudgetData, today: Date, monthCount = 6): ForecastMo
         ? occurrenceDateInMonth(entryDate.getDate(), date.getFullYear(), date.getMonth())
         : entryDate
       const isFutureOccurrence = index > 0 || occurrenceDate >= todayDate
+      const forecastItem = {
+        id: entry.id,
+        title: entry.title,
+        category: entry.category,
+        amount: entry.amount,
+        date: occurrenceDate,
+      }
       if (entry.kind === 'income') {
         income += entry.amount
+        incomeItems.push(forecastItem)
         if (isFutureOccurrence) remainingIncome += entry.amount
       } else {
         expenses += entry.amount
+        expenseItems.push(forecastItem)
         if (isFutureOccurrence) remainingExpenses += entry.amount
       }
     }
 
     for (const account of data.accounts) {
       if (account.kind === 'Credit card') {
-        const dueDay = Math.min(account.dueDay, new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate())
-        if (monthKey(date) !== monthKey(today) || dueDay >= today.getDate()) {
+        const thisMonthPaymentDate = occurrenceDateInMonth(account.dueDay, today.getFullYear(), today.getMonth())
+        const nextPaymentDate = thisMonthPaymentDate >= todayDate
+          ? thisMonthPaymentDate
+          : occurrenceDateInMonth(account.dueDay, today.getFullYear(), today.getMonth() + 1)
+        if (monthKey(date) === monthKey(nextPaymentDate)) {
           expenses += account.balance
+          expenseItems.push({
+            id: `credit-card-${account.id}`,
+            title: `${account.name} payment`,
+            category: 'Credit card payment',
+            amount: account.balance,
+            date: nextPaymentDate,
+          })
           remainingExpenses += account.balance
         }
       }
       else if (account.kind === 'Loan' && account.periodCount === 0) {
         expenses += account.payment
+        expenseItems.push({
+          id: `ongoing-loan-${account.id}`,
+          title: `${account.name} payment`,
+          category: 'Loan repayment',
+          amount: account.payment,
+          date: occurrenceDateInMonth(account.dueDay, date.getFullYear(), date.getMonth()),
+        })
         if (index > 0 || account.dueDay >= today.getDate()) remainingExpenses += account.payment
       }
+    }
+    const netInterest = runningNet > 0
+      ? Math.round((runningNet * MONTHLY_NET_INTEREST_RATE + Number.EPSILON) * 100) / 100
+      : projectedBalance < 0
+        ? Math.round((projectedBalance * MONTHLY_NET_INTEREST_RATE - Number.EPSILON) * 100) / 100
+        : 0
+    if (netInterest > 0) {
+      income += netInterest
+      incomeItems.push({
+        id: `net-interest-${key}`,
+        title: 'Interest on carried net',
+        category: 'Interest',
+        amount: netInterest,
+        date: occurrenceDateInMonth(1, date.getFullYear(), date.getMonth()),
+      })
+      remainingIncome += netInterest
+    } else if (netInterest < 0) {
+      const interestCharge = Math.abs(netInterest)
+      expenses += interestCharge
+      expenseItems.push({
+        id: `net-interest-${key}`,
+        title: 'Interest on carried deficit',
+        category: 'Interest',
+        amount: interestCharge,
+        date: occurrenceDateInMonth(1, date.getFullYear(), date.getMonth()),
+      })
+      remainingExpenses += interestCharge
     }
     const net = income - expenses
     const remainingNet = remainingIncome - remainingExpenses
     runningNet += remainingNet
     projectedBalance += remainingNet
-    return { date, income, expenses, net, runningNet, projectedBalance }
+    return { date, income, expenses, net, runningNet, projectedBalance, incomeItems, expenseItems }
   })
 }
 
@@ -259,6 +331,9 @@ function Icon({ name, size = 19 }: { name: string; size?: number }) {
     repeat: <><path d="m17 2 4 4-4 4" /><path d="M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4" /><path d="M21 13v2a3 3 0 0 1-3 3H3" /></>,
     wallet: <><rect x="3" y="5" width="18" height="15" rx="2" /><path d="M3 9h18M16 14h2" /><path d="M7 5V3h10v2" /></>,
     family: <><circle cx="9" cy="7" r="3" /><circle cx="17" cy="9" r="2" /><path d="M3.5 20v-2a5.5 5.5 0 0 1 11 0v2M14 15a4 4 0 0 1 6.5 3v2" /></>,
+    person: <><circle cx="12" cy="8" r="4" /><path d="M5 21v-2a7 7 0 0 1 14 0v2" /></>,
+    car: <><path d="m5 11 1.5-4.5A2 2 0 0 1 8.4 5h7.2a2 2 0 0 1 1.9 1.5L19 11" /><path d="M3 11h18v7H3zM6 18v2M18 18v2" /><circle cx="7" cy="14.5" r="1" /><circle cx="17" cy="14.5" r="1" /></>,
+    house: <><path d="m3 10 9-7 9 7" /><path d="M5 9v12h14V9M9 21v-7h6v7" /></>,
     card: <><rect x="2.5" y="5" width="19" height="14" rx="2" /><path d="M2.5 10h19M7 15h3" /></>,
     plus: <><path d="M12 5v14M5 12h14" /></>,
     arrow: <><path d="M7 17 17 7M7 7h10v10" /></>,
@@ -517,10 +592,12 @@ function App() {
   const saveQueue = useRef<Promise<void>>(Promise.resolve())
   const saveSequence = useRef(0)
   const [page, setPage] = useState<Page>('Overview')
+  const [spendingsExpanded, setSpendingsExpanded] = useState(false)
   const [modal, setModal] = useState<'entry' | 'account' | 'edit-account' | 'salary' | null>(null)
   const [entryKind, setEntryKind] = useState<EntryKind>('expense')
   const [entryFrequency, setEntryFrequency] = useState('once')
-  const [isFamilyExpense, setIsFamilyExpense] = useState(false)
+  const [editingEntry, setEditingEntry] = useState<Entry | null>(null)
+  const [expenseGroup, setExpenseGroup] = useState<'Family' | 'House' | 'Personal' | 'Car' | null>(null)
   const [accountKind, setAccountKind] = useState<AccountKind>('Loan')
   const [editingAccount, setEditingAccount] = useState<Account | null>(null)
   const [salaryCurrency, setSalaryCurrency] = useState<string>('USD')
@@ -631,7 +708,6 @@ function App() {
   const sixMonthForecast = forecast.slice(0, 6)
   const currentMonth = monthKey(today)
   const currentForecast = forecast[0]
-  const totalDebt = budget.accounts.reduce((total, account) => total + (account.kind === 'Bank account' ? 0 : account.balance), 0)
   const totalBankBalance = budget.accounts
     .filter((account) => account.kind === 'Bank account')
     .reduce((total, account) => total + account.balance, 0)
@@ -645,6 +721,12 @@ function App() {
       ? upcomingEntries.filter((entry) => entry.category === 'Salary' && entry.kind === 'income')
     : page === 'Family'
       ? upcomingEntries.filter((entry) => (entry.category === 'Family' || entry.category === 'Kids') && entry.kind === 'expense')
+    : page === 'House'
+      ? upcomingEntries.filter((entry) => entry.category === 'House' && entry.kind === 'expense')
+    : page === 'Personal'
+      ? upcomingEntries.filter((entry) => entry.category === 'Personal' && entry.kind === 'expense')
+    : page === 'Car'
+      ? upcomingEntries.filter((entry) => entry.category === 'Car' && entry.kind === 'expense')
     : page === 'Overview'
       ? upcomingEntries.filter((entry) => monthKey(dateFromInput(entry.date)) === currentMonth).slice(0, 5)
       : upcomingEntries
@@ -662,22 +744,33 @@ function App() {
     event.preventDefault()
     const fields = new FormData(event.currentTarget)
     const recurring = String(fields.get('frequency')) === 'monthly'
-    const recurrenceCount = recurring && isFamilyExpense ? Number(fields.get('recurrenceCount')) : undefined
+    const recurrenceCountValue = fields.get('recurrenceCount')
+    const recurrenceCount = recurring && (expenseGroup || recurrenceCountValue)
+      ? Number(recurrenceCountValue)
+      : undefined
     const entry: Entry = {
-      id: crypto.randomUUID(),
+      id: editingEntry?.id ?? crypto.randomUUID(),
       title: String(fields.get('title')).trim(),
       kind: String(fields.get('kind')) as EntryKind,
-      category: isFamilyExpense ? 'Family' : String(fields.get('category') || 'Other').trim(),
+      category: editingEntry?.category === 'Kids' && expenseGroup === 'Family'
+        ? 'Kids'
+        : expenseGroup ?? String(fields.get('category') || 'Other').trim(),
       amount: Number(fields.get('amount')),
       date: String(fields.get('date')),
       recurring,
       ...(recurrenceCount === undefined ? {} : { recurrenceCount }),
     }
     if (!entry.title || !Number.isFinite(entry.amount) || entry.amount <= 0 || !entry.date
-      || (recurring && isFamilyExpense && (typeof recurrenceCount !== 'number' || !Number.isInteger(recurrenceCount) || recurrenceCount < 1))) return
-    saveBudget({ ...budget, entries: [entry, ...budget.entries] })
+      || (recurrenceCount !== undefined && (!Number.isInteger(recurrenceCount) || recurrenceCount < 1))) return
+    saveBudget({
+      ...budget,
+      entries: editingEntry
+        ? budget.entries.map((current) => current.id === editingEntry.id ? entry : current)
+        : [entry, ...budget.entries],
+    })
     setModal(null)
-    setIsFamilyExpense(false)
+    setExpenseGroup(null)
+    setEditingEntry(null)
   }
 
   function addSalary(event: FormEvent<HTMLFormElement>) {
@@ -788,16 +881,32 @@ function App() {
   }
 
   function openEntry(kind: EntryKind = 'expense', recurring = false) {
-    setIsFamilyExpense(false)
+    setEditingEntry(null)
+    setExpenseGroup(null)
     setEntryKind(kind)
     setEntryFrequency(recurring ? 'monthly' : 'once')
     setModal('entry')
   }
 
-  function openFamilyExpense() {
-    setIsFamilyExpense(true)
+  function openGroupedExpense(group: 'Family' | 'House' | 'Personal' | 'Car') {
+    setEditingEntry(null)
+    setExpenseGroup(group)
     setEntryKind('expense')
     setEntryFrequency('monthly')
+    setModal('entry')
+  }
+
+  function editEntry(entry: Entry) {
+    setEditingEntry(entry)
+    setEntryKind(entry.kind)
+    setEntryFrequency(entry.recurring ? 'monthly' : 'once')
+    setExpenseGroup(
+      entry.category === 'Family' || entry.category === 'Kids'
+        ? 'Family'
+        : entry.category === 'House' || entry.category === 'Personal' || entry.category === 'Car'
+          ? entry.category
+          : null,
+    )
     setModal('entry')
   }
 
@@ -815,6 +924,12 @@ function App() {
 
   function editLoan(account: Account) {
     setAccountKind('Loan')
+    setEditingAccount(account)
+    setModal('edit-account')
+  }
+
+  function editCreditCard(account: Account) {
+    setAccountKind('Credit card')
     setEditingAccount(account)
     setModal('edit-account')
   }
@@ -848,18 +963,33 @@ function App() {
     : page === 'Transactions'
       ? 'Every income and expense, all in one place.'
       : page === 'Future Perspective'
-      ? 'See monthly cash flow and how your bank-account balance may accumulate over the next year.'
+      ? 'See monthly cash flow, 4% interest on positive carried net, and deficit interest based on projected bank balance.'
+      : page === 'Monthly Overview'
+        ? 'Review income, expenses, carried net, bank-balance-based deficit interest, and monthly details for the next 12 months.'
       : page === 'Recurring'
         ? 'Monthly items included in your future outlook.'
         : page === 'Salaries'
           ? 'Manage recurring salary income and its currency.'
         : page === 'Family'
           ? 'Plan and track one-time or recurring family expenses.'
+        : page === 'House'
+          ? 'Plan and track one-time or recurring house expenses.'
+        : page === 'Personal'
+          ? 'Plan and track one-time or recurring personal expenses.'
+        : page === 'Car'
+          ? 'Plan and track one-time or recurring car expenses.'
         : page === 'Accounts'
           ? 'Track cash in your bank accounts, including overdrafts.'
           : page === 'Loans'
             ? 'Track bank loans and their scheduled monthly repayments.'
             : 'Keep card balances and monthly payments in view.'
+  const spendingPageIsActive = SPENDING_ITEMS.some((item) => item.label === page)
+  const renderNavItem = (item: (typeof NAV_ITEMS)[number]) => (
+    <button key={item.label} className={`nav-link ${page === item.label ? 'active' : ''}`} onClick={() => setPage(item.label)}>
+      <Icon name={item.icon} /><span>{item.label}</span>
+      {item.label === 'Recurring' && budget.entries.some((entry) => entry.recurring) && <span className="nav-count">{budget.entries.filter((entry) => entry.recurring).length}</span>}
+    </button>
+  )
 
   return (
     <div className="app-shell">
@@ -869,7 +999,29 @@ function App() {
         </a>
         <div className="sidebar-caption">WORKSPACE</div>
         <nav className="main-nav" aria-label="Main navigation">
-          {NAV_ITEMS.map((item) => <button key={item.label} className={`nav-link ${page === item.label ? 'active' : ''}`} onClick={() => setPage(item.label)}><Icon name={item.icon} /><span>{item.label}</span>{item.label === 'Recurring' && budget.entries.some((entry) => entry.recurring) && <span className="nav-count">{budget.entries.filter((entry) => entry.recurring).length}</span>}</button>)}
+          {NAV_ITEMS.slice(0, 6).map(renderNavItem)}
+          <div className="nav-group">
+            <button
+              className={`nav-link nav-group-toggle ${spendingPageIsActive ? 'active' : ''}`}
+              aria-expanded={spendingsExpanded}
+              aria-controls="spendings-submenu"
+              onClick={() => setSpendingsExpanded((expanded) => !expanded)}
+              title="Spendings"
+            >
+              <Icon name="list" /><span>Spendings</span><span className="nav-group-chevron"><Icon name="chevron" size={14} /></span>
+            </button>
+            <div className="nav-subitems" id="spendings-submenu" hidden={!spendingsExpanded}>
+              {SPENDING_ITEMS.map((item) => <button
+                key={item.label}
+                className={`nav-link nav-sub-link ${page === item.label ? 'active' : ''}`}
+                onClick={() => { setPage(item.label); setSpendingsExpanded(true) }}
+                title={item.label}
+              >
+                <Icon name={item.icon} /><span>{item.label}</span>
+              </button>)}
+            </div>
+          </div>
+          {NAV_ITEMS.slice(6).map(renderNavItem)}
         </nav>
         <div className="sidebar-bottom">
           <div className="privacy-note"><span className="privacy-lock">◈</span><div><strong>Private by design</strong><p>Saved in your local SQLite database.</p></div></div>
@@ -882,7 +1034,7 @@ function App() {
           <div className="breadcrumb"><span>Workspace</span><Icon name="chevron" size={14} /><strong>{page}</strong></div>
           <div className="topbar-actions">
             <label className="currency-select"><span>Currency</span><select aria-label="Display currency" value={budget.currency} onChange={(event) => changeCurrency(event.target.value)}>{CURRENCIES.map((currency) => <option key={currency} value={currency}>{currency}</option>)}</select></label>
-            <button className="button button-primary button-small" onClick={page === 'Family' ? openFamilyExpense : () => openEntry()}><Icon name="plus" size={16} /> {page === 'Family' ? 'Add family expense' : 'Add item'}</button>
+            <button className="button button-primary button-small" onClick={page === 'Family' || page === 'House' || page === 'Personal' || page === 'Car' ? () => openGroupedExpense(page) : () => openEntry()}><Icon name="plus" size={16} /> {page === 'Family' || page === 'House' || page === 'Personal' || page === 'Car' ? `Add ${page.toLowerCase()} expense` : 'Add item'}</button>
           </div>
         </header>
 
@@ -913,11 +1065,6 @@ function App() {
                 <div className="summary-foot"><span>Including debt payments</span><span className="soft-badge expense-badge">EXPENSES</span></div>
                 <div className="mini-bar"><span className="expense-fill" style={{ width: `${currentForecast.expenses ? 56 : 0}%` }} /></div>
               </article>
-              <article className="summary-card debt-card">
-                <div className="summary-top"><span>Total debt</span><span className="summary-icon debt-icon"><Icon name="wallet" /></span></div>
-                <div className="summary-value">{formatMoney(totalDebt, budget.currency)}</div>
-                <div className="summary-foot"><span>{budget.accounts.length} linked {budget.accounts.length === 1 ? 'account' : 'accounts'}</span><button className="text-link" onClick={() => setPage('Accounts')}>View accounts <Icon name="chevron" size={13} /></button></div>
-              </article>
             </section>
 
             <section className="content-grid">
@@ -925,13 +1072,13 @@ function App() {
                 <div className="panel-heading"><div><span className="eyebrow">PLAN AHEAD</span><h2>Monthly outlook</h2><p>Income and expenses over the next six months</p></div><span className="forecast-tag"><Icon name="calendar" size={14} /> 6 months</span></div>
                 {budget.entries.length === 0 && budget.accounts.length === 0
                   ? <EmptyState title="Your forecast starts here" description="Add a recurring income, an expense, or a bill to see your month-by-month outlook." action={<button className="button button-outline" onClick={() => openEntry('income')}><Icon name="plus" size={15} /> Add your first item</button>} />
-                  : <><ForecastChart months={sixMonthForecast} currency={budget.currency} /><div className="forecast-footer"><span><i className="forecast-dot" /> Net change over 6 months</span><strong className={sixMonthForecast[5].runningNet >= 0 ? 'positive' : 'negative'}>{formatMoney(sixMonthForecast[5].runningNet, budget.currency)}</strong></div></>}
+                  : <><ForecastChart months={sixMonthForecast} currency={budget.currency} /><div className="forecast-footer"><span><i className="forecast-dot" /> Carried-net interest; deficit interest uses projected bank balance</span><strong className={sixMonthForecast[5].runningNet >= 0 ? 'positive' : 'negative'}>{formatMoney(sixMonthForecast[5].runningNet, budget.currency)}</strong></div></>}
               </article>
 
               <article className="panel balance-panel">
                 <div className="panel-heading"><div><span className="eyebrow">THE BIG PICTURE</span><h2>Future perspective</h2><p>Your projected cash flow</p></div><span className="round-icon"><Icon name="trend" size={17} /></span></div>
                 <div className="projection-number">{formatMoney(sixMonthForecast[5].runningNet, budget.currency)}</div>
-                <div className="projection-caption">net change across the next 6 months</div>
+                <div className="projection-caption">carried-net interest; deficit interest uses projected bank balance</div>
                 <div className="projection-list">{sixMonthForecast.slice(0, 3).map((month) => <div className="projection-row" key={monthKey(month.date)}><span><i className="month-dot" />{formatMonth(month.date, { month: 'long', year: 'numeric' })}</span><strong className={month.net >= 0 ? 'positive' : 'negative'}>{month.net >= 0 ? '+' : ''}{formatMoney(month.net, budget.currency)}</strong></div>)}</div>
                 <button className="text-link projection-link" onClick={() => setPage('Future Perspective')}>View 12-month perspective <Icon name="chevron" size={14} /></button>
               </article>
@@ -939,7 +1086,7 @@ function App() {
 
             <section className="panel activity-panel">
               <div className="panel-heading activity-heading"><div><span className="eyebrow">YOUR MONEY MOVING</span><h2>Recent activity</h2></div><button className="text-link" onClick={() => setPage('Transactions')}>All transactions <Icon name="chevron" size={14} /></button></div>
-              <EntryTable entries={visibleEntries} currency={budget.currency} onDelete={removeEntry} />
+              <EntryTable entries={visibleEntries} currency={budget.currency} onDelete={removeEntry} onEdit={editEntry} />
             </section>
           </>}
 
@@ -951,62 +1098,75 @@ function App() {
                 <div className="summary-foot"><span>Combined current account balances</span></div>
               </article>
               <article className="summary-card">
-                <div className="summary-top"><span>12-month net cash flow</span><span className="summary-icon income-icon"><Icon name="trend" /></span></div>
+                <div className="summary-top"><span>12-month accumulated net</span><span className="summary-icon income-icon"><Icon name="trend" /></span></div>
                 <div className={`summary-value ${forecast[11].runningNet >= 0 ? 'positive' : 'negative'}`}>{formatMoney(forecast[11].runningNet, budget.currency)}</div>
-                <div className="summary-foot"><span>Total forecast income minus expenses</span></div>
+                <div className="summary-foot"><span>Deficit interest uses projected bank balance</span></div>
               </article>
               <article className="summary-card summary-primary">
                 <div className="summary-top"><span>Projected bank balance</span><span className="summary-icon"><Icon name="wallet" /></span></div>
                 <div className="summary-value">{formatMoney(forecast[11].projectedBalance, budget.currency)}</div>
-                <div className="summary-foot"><span>After 12 months of projected cash flow</span></div>
+                <div className="summary-foot"><span>Current account balances + projected cash flow</span></div>
               </article>
             </section>
 
+            {bankAccounts.length > 0 && <section className="panel future-panel bank-account-panel">
+              <div className="panel-heading"><div><span className="eyebrow">CURRENT BALANCES</span><h2>Bank accounts</h2><p>Current balance snapshot; monthly projected amounts are entered separately in Monthly Overview.</p></div></div>
+              <BankAccountRows accounts={bankAccounts} currency={budget.currency} />
+            </section>}
+
             <section className="panel future-panel">
-              <div className="panel-heading"><div><span className="eyebrow">MONTHLY CASH FLOW</span><h2>Income and expenses</h2><p>Income is shown above zero and expenses below zero; the balance line starts with today’s bank balance and excludes past-dated cash flows this month.</p></div><span className="forecast-tag"><Icon name="calendar" size={14} /> 12 months</span></div>
+              <div className="panel-heading"><div><span className="eyebrow">MONTHLY CASH FLOW</span><h2>Income and expenses</h2><p>Positive carried net earns 4% monthly; carried deficits accrue 4% based on the previous projected bank balance. Bank balances start from current Accounts balances.</p></div><span className="forecast-tag"><Icon name="calendar" size={14} /> 12 months</span></div>
               <ForecastChart months={forecast} currency={budget.currency} />
             </section>
 
             <section className="panel future-panel">
-              <div className="panel-heading"><div><span className="eyebrow">ACCUMULATED BALANCE</span><h2>Projected bank-account balance</h2><p>Starts with today’s combined bank-account balances, then adds remaining current-month and future cash flows.</p></div><span className="round-icon"><Icon name="trend" size={17} /></span></div>
+              <div className="panel-heading"><div><span className="eyebrow">ACCUMULATED BALANCE</span><h2>Projected bank-account balance</h2><p>Starts with current balances set in Accounts and adds each month’s projected net cash flow.</p></div><span className="round-icon"><Icon name="trend" size={17} /></span></div>
               <div className="chart-legend"><span><i className="balance-legend" />Projected balance</span></div>
               <BalanceChart months={forecast} currency={budget.currency} />
             </section>
 
             <section className="panel future-panel future-table-panel">
-              <div className="panel-heading"><div><span className="eyebrow">MONTH-BY-MONTH</span><h2>Detailed outlook</h2><p>Accumulated balance reflects today’s bank balances plus remaining dated cash flows.</p></div></div>
-              <div className="table-scroll"><table className="entry-table forecast-details-table"><thead><tr><th>MONTH</th><th className="amount-column">INCOME</th><th className="amount-column">EXPENSES</th><th className="amount-column">NET</th><th className="amount-column">ACCUMULATED BALANCE</th></tr></thead><tbody>{forecast.map((month) => <tr key={monthKey(month.date)}><td>{formatMonth(month.date, { month: 'long', year: 'numeric' })}</td><td className="amount-column positive">{formatMoney(month.income, budget.currency)}</td><td className="amount-column negative">{formatMoney(month.expenses, budget.currency)}</td><td className={`amount-column ${month.net >= 0 ? 'positive' : 'negative'}`}>{month.net >= 0 ? '+' : ''}{formatMoney(month.net, budget.currency)}</td><td className="amount-column projected-balance-cell">{formatMoney(month.projectedBalance, budget.currency)}</td></tr>)}</tbody></table></div>
+              <div className="panel-heading"><div><span className="eyebrow">MONTH-BY-MONTH</span><h2>Detailed outlook</h2><p>Bank balance starts from account amounts set in Accounts and accumulates forecast net cash flow.</p></div></div>
+              <div className="table-scroll"><table className="entry-table forecast-details-table"><thead><tr><th>MONTH</th><th className="amount-column">INCOME</th><th className="amount-column">EXPENSES</th><th className="amount-column">NET</th><th className="amount-column">BANK BALANCE</th></tr></thead><tbody>{forecast.map((month) => <tr key={monthKey(month.date)}><td>{formatMonth(month.date, { month: 'long', year: 'numeric' })}</td><td className="amount-column positive">{formatMoney(month.income, budget.currency)}</td><td className="amount-column negative">{formatMoney(month.expenses, budget.currency)}</td><td className={`amount-column ${month.net >= 0 ? 'positive' : 'negative'}`}>{month.net >= 0 ? '+' : ''}{formatMoney(month.net, budget.currency)}</td><td className="amount-column projected-balance-cell">{formatMoney(month.projectedBalance, budget.currency)}</td></tr>)}</tbody></table></div>
             </section>
           </>}
 
-          {page === 'Transactions' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">INCOME & EXPENSES</span><h2>All transactions</h2><p>{budget.entries.length} {budget.entries.length === 1 ? 'item' : 'items'} in your budget</p></div><button className="button button-primary button-small" onClick={() => openEntry()}><Icon name="plus" size={15} /> Add transaction</button></div><EntryTable entries={visibleEntries} currency={budget.currency} onDelete={removeEntry} /></section>}
+          {page === 'Monthly Overview' && <section className="monthly-overview-page">
+            <div className="panel monthly-overview-intro">
+              <div><span className="eyebrow">12-MONTH BREAKDOWN</span><h2>Month-by-month details</h2><p>Review forecast income, expenses, net cash flow, and projected bank balance for each month.</p></div>
+              <span className="forecast-tag"><Icon name="calendar" size={14} /> 12 months</span>
+            </div>
+            {forecast.map((month) => <MonthlyOverviewCard key={monthKey(month.date)} month={month} currency={budget.currency} />)}
+          </section>}
 
-          {page === 'Recurring' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">REPEATS EACH MONTH</span><h2>Recurring items</h2><p>These are included in every future month from their start date.</p></div><button className="button button-primary button-small" onClick={() => openEntry('expense', true)}><Icon name="plus" size={15} /> Add recurring</button></div><EntryTable entries={visibleEntries} currency={budget.currency} onDelete={removeEntry} /></section>}
+          {page === 'Transactions' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">INCOME & EXPENSES</span><h2>All transactions</h2><p>{budget.entries.length} {budget.entries.length === 1 ? 'item' : 'items'} in your budget</p></div><button className="button button-primary button-small" onClick={() => openEntry()}><Icon name="plus" size={15} /> Add transaction</button></div><EntryTable entries={visibleEntries} currency={budget.currency} onDelete={removeEntry} onEdit={editEntry} showTotals /></section>}
 
-          {page === 'Salaries' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">RECURRING INCOME</span><h2>Your salaries</h2><p>{visibleEntries.length} {visibleEntries.length === 1 ? 'salary' : 'salaries'} · Added to income every month from the start date.</p></div><button className="button button-primary button-small" onClick={openSalary}><Icon name="plus" size={15} /> Add salary</button></div>{visibleEntries.length === 0 ? <EmptyState title="No salaries added yet" description="Add a salary with its monthly amount, currency, and start date." action={<button className="button button-outline" onClick={openSalary}><Icon name="plus" size={15} /> Add salary</button>} /> : <EntryTable entries={visibleEntries} currency={budget.currency} onDelete={removeEntry} />}</section>}
+          {page === 'Recurring' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">REPEATS EACH MONTH</span><h2>Recurring items</h2><p>These are included in every future month from their start date.</p></div><button className="button button-primary button-small" onClick={() => openEntry('expense', true)}><Icon name="plus" size={15} /> Add recurring</button></div><EntryTable entries={visibleEntries} currency={budget.currency} onDelete={removeEntry} onEdit={editEntry} showTotals /></section>}
 
-          {page === 'Family' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">FAMILY EXPENSES</span><h2>Family expenses</h2><p>{visibleEntries.length} {visibleEntries.length === 1 ? 'expense' : 'expenses'} · Monthly items can be scheduled for a chosen number of months.</p></div><button className="button button-primary button-small" onClick={openFamilyExpense}><Icon name="plus" size={15} /> Add family expense</button></div>{visibleEntries.length === 0 ? <EmptyState title="No family expenses added yet" description="Track one-time and recurring expenses for your family." action={<button className="button button-outline" onClick={openFamilyExpense}><Icon name="plus" size={15} /> Add family expense</button>} /> : <EntryTable entries={visibleEntries} currency={budget.currency} onDelete={removeEntry} />}</section>}
+          {page === 'Salaries' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">RECURRING INCOME</span><h2>Your salaries</h2><p>{visibleEntries.length} {visibleEntries.length === 1 ? 'salary' : 'salaries'} · Added to income every month from the start date.</p></div><button className="button button-primary button-small" onClick={openSalary}><Icon name="plus" size={15} /> Add salary</button></div>{visibleEntries.length === 0 ? <EmptyState title="No salaries added yet" description="Add a salary with its monthly amount, currency, and start date." action={<button className="button button-outline" onClick={openSalary}><Icon name="plus" size={15} /> Add salary</button>} /> : <EntryTable entries={visibleEntries} currency={budget.currency} onDelete={removeEntry} onEdit={editEntry} showTotals />}</section>}
+
+          {(page === 'Family' || page === 'House' || page === 'Personal' || page === 'Car') && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">{page.toUpperCase()} EXPENSES</span><h2>{page} expenses</h2><p>{visibleEntries.length} {visibleEntries.length === 1 ? 'expense' : 'expenses'} · Monthly items can be scheduled for a chosen number of months.</p></div><button className="button button-primary button-small" onClick={() => openGroupedExpense(page)}><Icon name="plus" size={15} /> Add {page.toLowerCase()} expense</button></div>{visibleEntries.length === 0 ? <EmptyState title={`No ${page.toLowerCase()} expenses added yet`} description={`Track one-time and recurring expenses for your ${page.toLowerCase()}.`} action={<button className="button button-outline" onClick={() => openGroupedExpense(page)}><Icon name="plus" size={15} /> Add {page.toLowerCase()} expense</button>} /> : <EntryTable entries={visibleEntries} currency={budget.currency} onDelete={removeEntry} onEdit={editEntry} showTotals />}</section>}
 
           {page === 'Accounts' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">BANK ACCOUNTS</span><h2>Your accounts</h2><p>{bankAccounts.length} {bankAccounts.length === 1 ? 'bank account' : 'bank accounts'} · Positive and negative balances are supported.</p></div><button className="button button-primary button-small" onClick={() => openAccount('Bank account')}><Icon name="plus" size={15} /> Add bank account</button></div>{bankAccounts.length === 0 ? <EmptyState title="No bank accounts added yet" description="Add a bank account and enter its current balance. Negative balances are supported for overdrafts." action={<button className="button button-outline" onClick={() => openAccount('Bank account')}><Icon name="plus" size={15} /> Add bank account</button>} /> : <AccountList accounts={bankAccounts} currency={budget.currency} entries={budget.entries} today={today} onDelete={removeAccount} onEdit={editBankAccount} />}</section>}
 
           {page === 'Loans' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">BANK LOAN BALANCES</span><h2>Your bank loans</h2><p>{loans.length} {loans.length === 1 ? 'bank loan' : 'bank loans'} · Scheduled monthly payments stop after the selected period.</p></div><button className="button button-primary button-small" onClick={() => openAccount('Loan')}><Icon name="plus" size={15} /> Add bank loan</button></div>{loans.length === 0 ? <EmptyState title="No bank loans added yet" description="Add a bank loan with a monthly payment, first payment date, and number of payments." action={<button className="button button-outline" onClick={() => openAccount('Loan')}><Icon name="plus" size={15} /> Add bank loan</button>} /> : <AccountList accounts={loans} currency={budget.currency} entries={budget.entries} today={today} onDelete={removeAccount} onEdit={editLoan} />}</section>}
 
-          {page === 'Credit cards' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">CARD BALANCES</span><h2>Your credit cards</h2><p>{creditCards.length} {creditCards.length === 1 ? 'card' : 'cards'} · Current debt is projected as a full monthly payment.</p></div><button className="button button-primary button-small" onClick={() => openAccount('Credit card')}><Icon name="plus" size={15} /> Add credit card</button></div>{creditCards.length === 0 ? <EmptyState title="No credit cards added yet" description="Add a credit card to track its current debt and monthly payment date." action={<button className="button button-outline" onClick={() => openAccount('Credit card')}><Icon name="plus" size={15} /> Add a credit card</button>} /> : <AccountList accounts={creditCards} currency={budget.currency} entries={budget.entries} today={today} onDelete={removeAccount} />}</section>}
+          {page === 'Credit cards' && <section className="panel page-panel"><div className="panel-heading activity-heading"><div><span className="eyebrow">CARD BALANCES</span><h2>Your credit cards</h2><p>{creditCards.length} {creditCards.length === 1 ? 'card' : 'cards'} · Current debt is projected once on the next payment date.</p></div><button className="button button-primary button-small" onClick={() => openAccount('Credit card')}><Icon name="plus" size={15} /> Add credit card</button></div>{creditCards.length === 0 ? <EmptyState title="No credit cards added yet" description="Add a credit card to track its current debt and monthly payment date." action={<button className="button button-outline" onClick={() => openAccount('Credit card')}><Icon name="plus" size={15} /> Add a credit card</button>} /> : <AccountList accounts={creditCards} currency={budget.currency} entries={budget.entries} today={today} onDelete={removeAccount} onEdit={editCreditCard} />}</section>}
 
           <footer className="page-footer"><span>Made for the everyday moments that add up.</span><span className={saveStatus === 'saving' ? 'save-pending' : saveStatus === 'error' ? 'save-failed' : ''}><i /> {saveStatus === 'saving' ? 'Saving to SQLite…' : saveStatus === 'error' ? 'Save failed' : 'Saved to local SQLite'}</span></footer>
         </div>
       </main>
 
-      {modal === 'entry' && <Modal title={isFamilyExpense ? 'Add family expense' : 'Add budget item'} onClose={() => { setModal(null); setIsFamilyExpense(false) }}>
+      {modal === 'entry' && <Modal title={editingEntry ? `Edit ${editingEntry.category.toLowerCase()} expense` : expenseGroup ? `Add ${expenseGroup.toLowerCase()} expense` : 'Add budget item'} onClose={() => { setModal(null); setExpenseGroup(null); setEditingEntry(null) }}>
         <form className="form-stack" onSubmit={addEntry}>
-          {!isFamilyExpense && <div className="kind-toggle"><button type="button" className={entryKind === 'expense' ? 'selected expense-selected' : ''} onClick={() => setEntryKind('expense')}><Icon name="down" size={16} /> Expense</button><button type="button" className={entryKind === 'income' ? 'selected income-selected' : ''} onClick={() => setEntryKind('income')}><Icon name="arrow" size={16} /> Income</button></div>}
+          {!expenseGroup && !editingEntry && <div className="kind-toggle"><button type="button" className={entryKind === 'expense' ? 'selected expense-selected' : ''} onClick={() => setEntryKind('expense')}><Icon name="down" size={16} /> Expense</button><button type="button" className={entryKind === 'income' ? 'selected income-selected' : ''} onClick={() => setEntryKind('income')}><Icon name="arrow" size={16} /> Income</button></div>}
           <input type="hidden" name="kind" value={entryKind} />
-          <label className="form-field"><span>Name</span><input name="title" placeholder={isFamilyExpense ? 'e.g. School payments' : entryKind === 'expense' ? 'e.g. Electricity bill' : 'e.g. Monthly salary'} autoFocus required maxLength={80} /></label>
-          <div className="form-row"><label className="form-field"><span>Amount</span><div className="amount-input"><span>{new Intl.NumberFormat(undefined, { style: 'currency', currency: budget.currency }).formatToParts(0).find((part) => part.type === 'currency')?.value}</span><AmountInput name="amount" label="Amount" required /></div></label>{isFamilyExpense ? <div className="form-field"><span>Category</span><span className="category-label">Family</span></div> : <label className="form-field"><span>Category</span><input name="category" placeholder="e.g. Housing, Food" maxLength={40} /></label>}</div>
-          <div className="form-row"><label className="form-field"><span>{entryKind === 'expense' ? 'First payment date' : 'Start date'}</span><input name="date" type="date" defaultValue={toDateInput(today)} required /></label><label className="form-field"><span>Frequency</span><select name="frequency" value={entryFrequency} onChange={(event) => setEntryFrequency(event.target.value)}><option value="once">One time</option><option value="monthly">Monthly recurring</option></select></label></div>
-          {isFamilyExpense && entryFrequency === 'monthly' && <label className="form-field"><span>Repeat for (months)</span><input name="recurrenceCount" type="number" min="1" step="1" placeholder="e.g. 10" required /></label>}
-          <div className="modal-note"><Icon name="repeat" size={16} /><span>{isFamilyExpense ? 'Monthly payments are included in your budget forecast for the number of months you choose.' : 'Recurring items are included in your six-month outlook from their start date.'}</span></div>
-          <div className="modal-actions"><button type="button" className="button button-plain" onClick={() => { setModal(null); setIsFamilyExpense(false) }}>Cancel</button><button type="submit" className="button button-primary">Add {isFamilyExpense ? 'expense' : entryKind}</button></div>
+          <label className="form-field"><span>Name</span><input name="title" defaultValue={editingEntry?.title} placeholder={expenseGroup === 'Family' ? 'e.g. School payments' : expenseGroup === 'House' ? 'e.g. Rent or utilities' : expenseGroup === 'Personal' ? 'e.g. Gym membership' : expenseGroup === 'Car' ? 'e.g. Fuel or insurance' : entryKind === 'expense' ? 'e.g. Electricity bill' : 'e.g. Monthly salary'} autoFocus required maxLength={80} /></label>
+          <div className="form-row"><label className="form-field"><span>Amount</span><div className="amount-input"><span>{new Intl.NumberFormat(undefined, { style: 'currency', currency: budget.currency }).formatToParts(0).find((part) => part.type === 'currency')?.value}</span><AmountInput name="amount" label="Amount" defaultValue={editingEntry ? String(editingEntry.amount) : ''} required /></div></label>{expenseGroup ? <div className="form-field"><span>Category</span><span className="category-label">{expenseGroup}</span></div> : <label className="form-field"><span>Category</span><input name="category" defaultValue={editingEntry?.category} placeholder="e.g. Housing, Food" maxLength={40} /></label>}</div>
+          <div className="form-row"><label className="form-field"><span>{entryKind === 'expense' ? 'First payment date' : 'Start date'}</span><input name="date" type="date" defaultValue={editingEntry?.date ?? toDateInput(today)} required /></label><label className="form-field"><span>Frequency</span><select name="frequency" value={entryFrequency} onChange={(event) => setEntryFrequency(event.target.value)}><option value="once">One time</option><option value="monthly">Monthly recurring</option></select></label></div>
+          {(expenseGroup || editingEntry?.recurrenceCount !== undefined) && entryFrequency === 'monthly' && <label className="form-field"><span>Repeat for (months)</span><input name="recurrenceCount" type="number" min="1" step="1" placeholder="e.g. 10" defaultValue={editingEntry?.recurrenceCount} required /></label>}
+          <div className="modal-note"><Icon name="repeat" size={16} /><span>{expenseGroup ? 'Monthly payments are included in your budget forecast for the number of months you choose.' : 'Recurring items are included in your six-month outlook from their start date.'}</span></div>
+          <div className="modal-actions"><button type="button" className="button button-plain" onClick={() => { setModal(null); setExpenseGroup(null); setEditingEntry(null) }}>Cancel</button><button type="submit" className="button button-primary">{editingEntry ? 'Save changes' : `Add ${expenseGroup ? 'expense' : entryKind}`}</button></div>
         </form>
       </Modal>}
 
@@ -1028,7 +1188,7 @@ function App() {
         </form>
       </Modal>}
 
-      {(modal === 'account' || modal === 'edit-account') && <Modal title={modal === 'edit-account' ? `Edit ${accountKind === 'Loan' ? 'bank loan' : 'bank account'}` : `Add ${accountKind === 'Bank account' ? 'bank account' : accountKind === 'Loan' ? 'bank loan' : 'credit card'}`} onClose={() => { setModal(null); setEditingAccount(null) }}>
+      {(modal === 'account' || modal === 'edit-account') && <Modal title={modal === 'edit-account' ? `Edit ${accountKind === 'Loan' ? 'bank loan' : accountKind === 'Credit card' ? 'credit card' : 'bank account'}` : `Add ${accountKind === 'Bank account' ? 'bank account' : accountKind === 'Loan' ? 'bank loan' : 'credit card'}`} onClose={() => { setModal(null); setEditingAccount(null) }}>
         <form className="form-stack" onSubmit={addAccount}>
           <input type="hidden" name="kind" value={accountKind} />
           <label className="form-field"><span>{accountKind === 'Bank account' ? 'Bank account name' : accountKind === 'Loan' ? 'Bank loan name' : 'Credit card name'}</span><input name="name" defaultValue={editingAccount?.name} placeholder={accountKind === 'Bank account' ? 'e.g. Everyday checking' : accountKind === 'Loan' ? 'e.g. Car loan' : 'e.g. Travel card'} autoFocus required maxLength={80} /></label>
@@ -1037,8 +1197,8 @@ function App() {
             <div className="form-row"><label className="form-field"><span>Monthly payment</span><AmountInput name="payment" label="Monthly payment" defaultValue={editingAccount?.kind === 'Loan' ? String(editingAccount.payment) : '0'} placeholder="0,00" required={accountKind === 'Loan'} /></label><label className="form-field"><span>Interest rate (APR %)</span><input name="apr" type="number" min="0" max="100" step="0.01" placeholder="0" defaultValue={editingAccount?.kind === 'Loan' ? String(editingAccount.apr) : '0'} /></label></div>
             <div className="form-row"><label className="form-field"><span>First payment date</span><input name="firstPaymentDate" type="date" defaultValue={editingAccount?.kind === 'Loan' ? budget.entries.find((entry) => entry.linkedAccountId === editingAccount.id)?.date ?? toDateInput(today) : toDateInput(today)} required /></label><label className="form-field"><span>Number of payments</span><input name="periodCount" type="number" min="1" step="1" placeholder="e.g. 60" defaultValue={editingAccount?.kind === 'Loan' && editingAccount.periodCount > 0 ? String(editingAccount.periodCount) : undefined} required /></label></div>
           </>}
-          {accountKind === 'Credit card' && <label className="form-field"><span>Payment date (day of month)</span><input name="dueDay" type="number" min="1" max="31" defaultValue="1" required /></label>}
-          <div className="modal-note"><Icon name="calendar" size={16} /><span>{accountKind === 'Bank account' ? 'Enter a negative balance to show an overdraft. Bank balances do not count as debt payments in the forecast.' : accountKind === 'Loan' ? 'A recurring expense will be created for the selected number of monthly payments and will stop automatically. Interest is for reference only.' : 'The current debt is assumed paid in full on its payment date and each following month in your forecast.'}</span></div>
+          {accountKind === 'Credit card' && <label className="form-field"><span>Payment date (day of month)</span><input name="dueDay" type="number" min="1" max="31" defaultValue={editingAccount?.kind === 'Credit card' ? String(editingAccount.dueDay) : '1'} required /></label>}
+          <div className="modal-note"><Icon name="calendar" size={16} /><span>{accountKind === 'Bank account' ? 'Enter a negative balance to show an overdraft. Bank balances do not count as debt payments in the forecast.' : accountKind === 'Loan' ? 'A recurring expense will be created for the selected number of monthly payments and will stop automatically. Interest is for reference only.' : 'The current debt is forecast as a one-time payment on the next payment date.'}</span></div>
           <div className="modal-actions"><button type="button" className="button button-plain" onClick={() => { setModal(null); setEditingAccount(null) }}>Cancel</button><button type="submit" className="button button-primary">{editingAccount ? 'Save changes' : `Add ${accountKind === 'Bank account' ? 'bank account' : accountKind === 'Loan' ? 'bank loan' : 'credit card'}`}</button></div>
         </form>
       </Modal>}
@@ -1046,22 +1206,111 @@ function App() {
   )
 }
 
-function EntryTable({ entries, currency, onDelete }: { entries: Entry[]; currency: string; onDelete: (id: string) => void }) {
+function MonthlyOverviewCard({ month, currency }: { month: ForecastMonth; currency: string }) {
+  return <article className="panel monthly-overview-card">
+    <header className="monthly-overview-heading">
+      <h2>{formatMonth(month.date, { month: 'long', year: 'numeric' })}</h2>
+      <div className="monthly-overview-totals">
+        <div><span>Income</span><strong className="positive">{formatMoney(month.income, currency)}</strong></div>
+        <div><span>Expenses</span><strong className="negative">{formatMoney(month.expenses, currency)}</strong></div>
+        <div><span>Net cash flow</span><strong className={month.net >= 0 ? 'positive' : 'negative'}>{month.net >= 0 ? '+' : '−'}{formatMoney(Math.abs(month.net), currency)}</strong></div>
+        <div><span>Projected bank balance</span><strong className={month.projectedBalance < 0 ? 'negative' : 'positive'}>{formatMoney(month.projectedBalance, currency)}</strong></div>
+      </div>
+    </header>
+    <div className="monthly-overview-details">
+      <MonthlyOverviewItems title="Income details" items={month.incomeItems} currency={currency} emptyMessage="No income scheduled this month." />
+      <MonthlyOverviewItems title="Expense details" items={month.expenseItems} currency={currency} emptyMessage="No expenses scheduled this month." />
+    </div>
+  </article>
+}
+
+function BankAccountRows({ accounts, currency }: { accounts: Account[]; currency: string }) {
+  return <ul className="bank-account-rows">{accounts.map((account) => <li key={account.id}>
+    <span>{account.name}</span>
+    <strong className={account.balance < 0 ? 'negative' : 'positive'}>{formatMoney(account.balance, currency)}</strong>
+  </li>)}</ul>
+}
+
+function MonthlyOverviewItems({ title, items, currency, emptyMessage }: { title: string; items: ForecastItem[]; currency: string; emptyMessage: string }) {
+  const groupedExpenses = title === 'Expense details'
+    ? groupMonthlyExpenses(items)
+    : []
+
+  return <section className="monthly-overview-items">
+    <h3>{title}<span>{items.length}</span></h3>
+    {items.length === 0
+      ? <p className="monthly-overview-empty">{emptyMessage}</p>
+      : title === 'Expense details'
+        ? <div className="monthly-expense-groups">{groupedExpenses.map((group) => <section className="monthly-expense-group" key={group.name}>
+          <h4><span>{group.name}<small>{group.items.length} {group.items.length === 1 ? 'item' : 'items'}</small></span><strong>{formatMoney(group.total, currency)}</strong></h4>
+          <ul>{group.items.map((item) => <li key={item.id}>
+            <span className="monthly-item-description"><strong>{item.title}</strong><small>{item.category} · {new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(item.date)}</small></span>
+            <strong className="negative">−{formatMoney(item.amount, currency)}</strong>
+          </li>)}</ul>
+        </section>)}</div>
+        : <ul>{items.map((item) => <li key={item.id}>
+          <span className="monthly-item-description"><strong>{item.title}</strong><small>{item.category} · {new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(item.date)}</small></span>
+          <strong className="positive">+{formatMoney(item.amount, currency)}</strong>
+        </li>)}</ul>}
+  </section>
+}
+
+function groupMonthlyExpenses(items: ForecastItem[]) {
+  const groupOrder = ['House', 'Family', 'Personal', 'Car', 'Loans', 'Credit cards', 'Interest', 'Other']
+  const grouped = new Map<string, ForecastItem[]>()
+
+  for (const item of items) {
+    const group = item.category === 'Kids' ? 'Family'
+      : item.category === 'House' || item.category === 'Family' || item.category === 'Personal' || item.category === 'Car'
+        ? item.category
+        : item.category === 'Loan repayment' ? 'Loans'
+          : item.category === 'Credit card payment' ? 'Credit cards'
+            : item.category === 'Interest' ? 'Interest'
+              : 'Other'
+    grouped.set(group, [...(grouped.get(group) ?? []), item])
+  }
+
+  return groupOrder.flatMap((name) => {
+    const groupItems = grouped.get(name)
+    return groupItems
+      ? [{ name, items: groupItems, total: groupItems.reduce((sum, item) => sum + item.amount, 0) }]
+      : []
+  })
+}
+
+function EntryTable({ entries, currency, onDelete, onEdit, showTotals = false }: { entries: Entry[]; currency: string; onDelete: (id: string) => void; onEdit: (entry: Entry) => void; showTotals?: boolean }) {
   if (entries.length === 0) return <EmptyState title="Nothing to show yet" description="Add an income or expense to start building your household budget." action={null} />
 
-  return <div className="table-scroll"><table className="entry-table"><thead><tr><th>DESCRIPTION</th><th>CATEGORY</th><th>DATE</th><th>FREQUENCY</th><th className="amount-column">AMOUNT</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{entries.map((entry) => <tr key={entry.id}><td><span className={`entry-symbol ${entry.kind}`}><Icon name={entry.kind === 'income' ? 'arrow' : 'down'} size={16} /></span><span className="entry-title"><strong>{entry.title}</strong><small>{entry.exchangeRate && entry.currency && entry.currency !== currency ? `Salary rate · 1 ${entry.currency} = ${new Intl.NumberFormat(undefined, { maximumSignificantDigits: 8 }).format(entry.exchangeRate)} ${currency}${entry.exchangeRateDate ? ` · ${entry.exchangeRateDate}` : ''}` : entry.kind === 'income' ? 'Income' : 'Expense'}</small></span></td><td><span className="category-label">{entry.category === 'Kids' ? 'Family' : entry.category || 'Other'}</span></td><td>{new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(dateFromInput(entry.date))}</td><td>{entry.recurring ? <span className="frequency"><Icon name="repeat" size={13} /> {entry.recurrenceCount ? `Monthly · ${entry.recurrenceCount} ${entry.category === 'Family' || entry.category === 'Kids' ? 'months' : 'payments'}` : 'Monthly'}</span> : <span className="frequency-once">One time</span>}</td><td className={`amount-column ${entry.kind === 'income' ? 'positive' : 'negative'}`}>{entry.kind === 'income' ? '+' : '−'}{formatMoney(entry.sourceAmount ?? entry.amount, entry.currency ?? currency)}</td><td><button className="icon-button delete-button" aria-label={`Delete ${entry.title}`} onClick={() => onDelete(entry.id)}><Icon name="trash" size={15} /></button></td></tr>)}</tbody></table></div>
+  const totals = entries.reduce((result, entry) => {
+    result[entry.kind] += entry.amount
+    return result
+  }, { income: 0, expense: 0 })
+  const shownKinds = [...new Set(entries.map((entry) => entry.kind))]
+
+  return <div className="table-scroll"><table className="entry-table"><thead><tr><th>DESCRIPTION</th><th>CATEGORY</th><th>DATE</th><th>FREQUENCY</th><th className="amount-column">AMOUNT</th><th><span className="sr-only">Actions</span></th></tr></thead><tbody>{entries.map((entry) => <tr key={entry.id}><td><span className={`entry-symbol ${entry.kind}`}><Icon name={entry.kind === 'income' ? 'arrow' : 'down'} size={16} /></span><span className="entry-title"><strong>{entry.title}</strong><small>{entry.exchangeRate && entry.currency && entry.currency !== currency ? `Salary rate · 1 ${entry.currency} = ${new Intl.NumberFormat(undefined, { maximumSignificantDigits: 8 }).format(entry.exchangeRate)} ${currency}${entry.exchangeRateDate ? ` · ${entry.exchangeRateDate}` : ''}` : entry.kind === 'income' ? 'Income' : 'Expense'}</small></span></td><td><span className="category-label">{entry.category === 'Kids' ? 'Family' : entry.category || 'Other'}</span></td><td>{new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(dateFromInput(entry.date))}</td><td>{entry.recurring ? <span className="frequency"><Icon name="repeat" size={13} /> {entry.recurrenceCount ? `Monthly · ${entry.recurrenceCount} ${entry.category === 'Family' || entry.category === 'Kids' || entry.category === 'House' ? 'months' : 'payments'}` : 'Monthly'}</span> : <span className="frequency-once">One time</span>}</td><td className={`amount-column ${entry.kind === 'income' ? 'positive' : 'negative'}`}>{entry.kind === 'income' ? '+' : '−'}{formatMoney(entry.sourceAmount ?? entry.amount, entry.currency ?? currency)}</td><td><span className="entry-actions">{entry.kind === 'expense' && !entry.linkedAccountId && <button className="icon-button" aria-label={`Edit ${entry.title}`} onClick={() => onEdit(entry)}><Icon name="edit" size={15} /></button>}<button className="icon-button delete-button" aria-label={`Delete ${entry.title}`} onClick={() => onDelete(entry.id)}><Icon name="trash" size={15} /></button></span></td></tr>)}</tbody>{showTotals && <tfoot>{shownKinds.map((kind) => <tr key={kind}><th colSpan={4}>Total {kind === 'income' ? 'income' : 'expenses'} <span>({currency})</span></th><td className={`amount-column ${kind === 'income' ? 'positive' : 'negative'}`}>{formatMoney(totals[kind], currency)}</td><td /></tr>)}</tfoot>}</table></div>
 }
 
 function AccountList({ accounts, currency, entries, today, onDelete, onEdit }: { accounts: Account[]; currency: string; entries: Entry[]; today: Date; onDelete: (id: string) => void; onEdit?: (account: Account) => void }) {
-  return <div className="account-list">{accounts.map((account) => <article className="account-row" key={account.id}>
-    <span className={`account-symbol ${account.kind === 'Loan' ? 'loan-symbol' : account.kind === 'Bank account' ? 'bank-symbol' : 'card-symbol'}`}><Icon name={account.kind === 'Credit card' ? 'card' : 'wallet'} size={19} /></span>
-    <div className="account-name"><strong>{account.name}</strong><span>{account.kind === 'Loan' ? `Bank loan · ${account.apr}% APR · ${remainingLoanPayments(account, entries, today) === null ? 'Ongoing payments' : `${remainingLoanPayments(account, entries, today)} payments left`}` : account.kind === 'Credit card' ? 'Credit card' : account.kind}</span></div>
-    {account.kind === 'Loan' && <div className="account-payment"><span>Monthly payment</span><strong>{formatMoney(account.payment, currency)}</strong></div>}
-    {account.kind === 'Credit card' && <div className="account-payment"><span>Payment date</span><strong>Day {account.dueDay}</strong></div>}
-    <div className="account-balance"><span>{account.kind === 'Credit card' ? 'Current debt' : account.balance < 0 ? 'Overdrawn' : 'Balance'}</span><strong className={account.balance < 0 ? 'negative' : ''}>{formatMoney(account.balance, currency)}</strong></div>
-    {(account.kind === 'Bank account' || account.kind === 'Loan') && onEdit && <button className="icon-button" aria-label={`Edit ${account.name}`} onClick={() => onEdit(account)}><Icon name="edit" size={16} /></button>}
-    <button className="icon-button delete-button" aria-label={`Remove ${account.name}`} onClick={() => onDelete(account.id)}><Icon name="trash" size={16} /></button>
-  </article>)}</div>
+  const total = accounts.reduce((sum, account) => sum + account.balance, 0)
+  const accountKind = accounts[0]?.kind
+  const totalLabel = accountKind === 'Loan'
+    ? 'Total loan balance'
+    : accountKind === 'Credit card'
+      ? 'Total credit card debt'
+      : 'Total bank-account balance'
+
+  return <>
+    <div className="account-list">{accounts.map((account) => <article className="account-row" key={account.id}>
+      <span className={`account-symbol ${account.kind === 'Loan' ? 'loan-symbol' : account.kind === 'Bank account' ? 'bank-symbol' : 'card-symbol'}`}><Icon name={account.kind === 'Credit card' ? 'card' : 'wallet'} size={19} /></span>
+      <div className="account-name"><strong>{account.name}</strong><span>{account.kind === 'Loan' ? `Bank loan · ${account.apr}% APR · ${remainingLoanPayments(account, entries, today) === null ? 'Ongoing payments' : `${remainingLoanPayments(account, entries, today)} payments left`}` : account.kind === 'Credit card' ? 'Credit card' : account.kind}</span></div>
+      {account.kind === 'Loan' && <div className="account-payment"><span>Monthly payment</span><strong>{formatMoney(account.payment, currency)}</strong></div>}
+      {account.kind === 'Credit card' && <div className="account-payment"><span>Payment date</span><strong>Day {account.dueDay}</strong></div>}
+      <div className="account-balance"><span>{account.kind === 'Credit card' ? 'Current debt' : account.balance < 0 ? 'Overdrawn' : 'Balance'}</span><strong className={account.balance < 0 ? 'negative' : ''}>{formatMoney(account.balance, currency)}</strong></div>
+      {(account.kind === 'Bank account' || account.kind === 'Loan' || account.kind === 'Credit card') && onEdit && <button className="icon-button" aria-label={`Edit ${account.name}`} onClick={() => onEdit(account)}><Icon name="edit" size={16} /></button>}
+      <button className="icon-button delete-button" aria-label={`Remove ${account.name}`} onClick={() => onDelete(account.id)}><Icon name="trash" size={16} /></button>
+    </article>)}</div>
+    {accountKind && <div className="account-total"><strong>{totalLabel}</strong><strong className={total < 0 ? 'negative' : ''}>{formatMoney(total, currency)}</strong></div>}
+  </>
 }
 
 export default App

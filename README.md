@@ -25,17 +25,21 @@ Run the API persistence tests with `npm test`.
 ## What it does
 
 - Track one-time or monthly recurring income and expenses, with custom names and categories.
+- Edit expense amounts, dates, categories, and recurrence settings from transaction and expense lists.
+- Browse House, Family, Personal, and Car expense pages under the collapsible Spendings menu.
 - Manage salaries in a dedicated section; salaries repeat monthly and use a live exchange rate for forecasts.
-- Track one-time and monthly family expenses in a dedicated section, with a chosen month count for recurring items.
-- See monthly income, expenses, debt payments, and a rolling six-month cash-flow forecast.
-- Use Future Perspective for 12 monthly income/expense graphs, accumulated balance trends, and a month-by-month breakdown.
+- Track one-time and monthly family, house, personal, and car expenses in dedicated sections, with a chosen month count for recurring items.
+- View income and expense totals at the bottom of the transaction, recurring, salary, family, house, personal, and car lists; totals are shown in the selected budget currency.
+- See monthly income, expenses, debt payments, rolling cash flow, and bank-balance-based deficit interest.
+- Use Future Perspective for 12 monthly income/expense graphs and a month-by-month breakdown.
+- Use Monthly Overview to inspect each of the next 12 months, including itemized income, expenses grouped by spending type, monthly net, and projected bank balance.
 - Manage bank accounts, bank loans, and credit cards in separate left-menu sections.
 - Track positive or negative bank-account balances, bank-loan terms, and credit-card debt with a monthly payment date.
 - Schedule each bank loan's monthly repayment from its first payment date for a chosen number of payments.
 - Enter monetary values with live dot-separated thousands and comma decimals (for example, `1.234,56`).
 - Choose a display currency and remove budget items or accounts.
 
-The forecast repeats monthly entries from their start dates; a salary is recurring income converted to the budget currency using a rate fetched from the free Frankfurter API when the salary is added. That rate and its effective date are saved with the salary so forecasts remain consistent; adding a salary sends the currency pair but not its amount to Frankfurter. A bank loan creates a linked recurring expense that ends after its selected payment count. A credit card's current debt is assumed paid in full on its monthly payment date and each following month. A one-time item is included only in the month it is dated. Future Perspective shows the next 12 months and calculates accumulated balance from today's combined bank-account balance, applying only cash flows dated today or later in the current month and all forecast cash flows in later months. The six-month net on the overview remains cumulative income minus expenses. Loan APR is informational and is not used to estimate interest or payoff dates.
+The forecast repeats monthly entries from their start dates; a salary is recurring income converted to the budget currency using a rate fetched from the free Frankfurter API when the salary is added. That rate and its effective date are saved with the salary so forecasts remain consistent; adding a salary sends the currency pair but not its amount to Frankfurter. A bank loan creates a linked recurring expense that ends after its selected payment count. A credit card's current debt is forecast as a one-time payment on its next monthly payment date. A one-time item is included only in the month it is dated. Positive accumulated forecast net earns 4% monthly interest. When the prior projected bank balance is negative, the carried deficit accrues 4% interest based on that projected bank balance; the resulting charge is included in forecast expenses and updates subsequent projected bank balances. Edit current bank-account balances only in Accounts. Future bank balances start with the current combined account balance and accumulate projected net cash flow by month. Loan APR is informational and is not used to estimate interest or payoff dates.
 
 ## SQLite data and privacy
 
